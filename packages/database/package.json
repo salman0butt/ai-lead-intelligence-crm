@@ -1,0 +1,1 @@
+{ "name": "@ai-crm/database", "version": "0.0.0", "private": true, "type": "module", "exports": { ".": "./src/index.ts" }, "dependencies": { "@prisma/client": "^7.10.0" }, "devDependencies": { "prisma": "^7.10.0", "typescript": "^6.0.3" } }

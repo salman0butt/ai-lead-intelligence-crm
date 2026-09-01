@@ -1,0 +1,12 @@
+{
+  "name": "ai-lead-intelligence-crm",
+  "private": true,
+  "packageManager": "pnpm@11.24.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "build": "pnpm -r --if-present build"
+  }
+}
