@@ -1,13 +1,17 @@
 import { loadServerEnv } from '@ai-crm/config';
 import { createPrismaClient } from '@ai-crm/database';
+import { PgBossQueueService } from '@ai-crm/queue';
+import { registerJobWorkers } from './job-worker.js';
 import { createWorkerLifecycle } from './lifecycle.js';
 
 async function main() {
   const env = loadServerEnv(process.env);
   const database = createPrismaClient(env.DATABASE_URL);
-  const worker = createWorkerLifecycle(database);
+  const queue = new PgBossQueueService(env.DATABASE_URL, database);
+  const worker = createWorkerLifecycle(database, queue);
 
   await worker.start();
+  await registerJobWorkers(database, queue);
   console.info('worker ready');
 
   let stopping = false;
