@@ -1,0 +1,43 @@
+name: refresh-m1-lockfile
+
+on:
+  push:
+    branches: [feat/milestone-1-postgres-job-system]
+    paths:
+      - package.json
+      - apps/api/package.json
+      - apps/worker/package.json
+      - packages/queue/package.json
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/milestone-1-postgres-job-system
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Refresh lockfile
+        run: pnpm install --lockfile-only --no-frozen-lockfile
+      - name: Commit lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- pnpm-lock.yaml; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add pnpm-lock.yaml
+          git commit -m "chore: refresh milestone 1 lockfile"
+          git push origin HEAD:feat/milestone-1-postgres-job-system
