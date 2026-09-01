@@ -7,7 +7,9 @@ const userId = '00000000-0000-4000-8000-000000000002';
 const campaignId = '00000000-0000-4000-8000-000000000003';
 const createdAt = new Date('2026-09-01T00:00:00Z');
 
-function createCampaign(status: 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED' = 'DRAFT') {
+type Status = 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED';
+
+function createCampaign(status: Status = 'DRAFT') {
   return {
     id: campaignId,
     workspaceId,
@@ -24,7 +26,7 @@ function createCampaign(status: 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED' = 
   };
 }
 
-function createDb(options: { member?: boolean; status?: 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED' } = {}) {
+function createDb(options: { member?: boolean; status?: Status } = {}) {
   let campaign = createCampaign(options.status);
   const member = options.member ?? true;
 
@@ -54,7 +56,7 @@ function createDb(options: { member?: boolean; status?: 'DRAFT' | 'PLANNING' | '
       )),
       updateMany: vi.fn(async ({ where, data }: {
         where: { id: string; workspaceId: string; status?: unknown };
-        data: { status: 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED' };
+        data: { status: Status };
       }) => {
         if (where.id !== campaignId || where.workspaceId !== workspaceId || !statusMatches(where.status)) {
           return { count: 0 };
@@ -63,7 +65,9 @@ function createDb(options: { member?: boolean; status?: 'DRAFT' | 'PLANNING' | '
         return { count: 1 };
       }),
     },
+    $transaction: vi.fn(),
   };
+  db.$transaction.mockImplementation(async (operation: (client: typeof db) => Promise<unknown>) => operation(db));
 
   return { db, getCampaign: () => ({ ...campaign }) };
 }
@@ -145,6 +149,7 @@ describe('CampaignsService', () => {
 
     const result = await service.start(userId, campaignId);
 
+    expect(db.$transaction).toHaveBeenCalled();
     expect(result.campaign.status).toBe('PLANNING');
     expect(queue.enqueue).toHaveBeenCalledWith(
       'campaign-plan',
