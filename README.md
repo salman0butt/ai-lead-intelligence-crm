@@ -2,23 +2,25 @@
 
 Autonomous AI Lead Intelligence & Sales CRM.
 
-This repository is currently scoped to **Milestone 0 — Project Foundation**. Lead discovery, pg-boss queues, campaign orchestration, crawling, enrichment, and AI research belong to later milestones and are intentionally not implemented here yet.
+The repository currently completes **Milestone 1 — PostgreSQL Job System** on top of the authenticated multi-tenant foundation from Milestone 0. Campaign models, lead discovery, crawling, enrichment, AI research, and outreach generation business logic remain intentionally outside this milestone.
 
-## Milestone 0 architecture
+## Architecture
 
 ```text
 apps/
   web/       Next.js + React + TypeScript + Tailwind + TanStack Query
-  api/       NestJS + TypeScript
-  worker/    Independent background worker process
+  api/       NestJS API, authentication, workspaces, job scheduling/status
+  worker/    Independent pg-boss worker process
 
 packages/
   database/  Prisma + PostgreSQL client and migrations
-  queue/     Package boundary only; pg-boss starts in Milestone 1
+  queue/     QueueService contract + PgBossQueueService adapter
   shared/    Shared application types
   config/    Zod environment validation
   schemas/   Shared request schemas
 ```
+
+No Redis, BullMQ, RabbitMQ, Kafka, or Temporal is used. PostgreSQL is the durable store for both application data and pg-boss jobs.
 
 ## Prerequisites
 
@@ -28,68 +30,114 @@ packages/
 
 ## Local setup
 
-1. Create the local environment file.
-
 ```bash
 cp .env.example .env
-```
-
-2. Install dependencies.
-
-```bash
 pnpm install
-```
-
-3. Start PostgreSQL.
-
-```bash
 pnpm db:up
-```
-
-4. Apply the committed Prisma migration.
-
-```bash
 pnpm db:deploy
-```
-
-5. Build all packages and applications.
-
-```bash
 pnpm build
 ```
 
-6. Start each process independently in separate terminals.
+Start the processes independently in separate terminals:
 
 ```bash
 pnpm start:api
-```
-
-```bash
 pnpm start:worker
-```
-
-```bash
 pnpm start:web
 ```
 
 The web application is available at `http://localhost:3000` and the API at `http://localhost:4000`.
 
-For frontend-only development after the shared packages are built, use:
+## Authentication and tenancy
 
-```bash
-pnpm dev:web
+- Passwords are hashed with Argon2.
+- Login sessions use opaque random bearer tokens; only SHA-256 token hashes are persisted.
+- Every registered user starts with a workspace and an `OWNER` membership.
+- Workspace-scoped API access is authorized through `WorkspaceMember` on the backend.
+- Jobs cannot be scheduled or read merely by supplying another workspace ID.
+
+## PostgreSQL job system
+
+Application code depends on the `QueueService` abstraction rather than calling pg-boss directly. `PgBossQueueService` implements:
+
+- `enqueue()`
+- `enqueueBulk()`
+- `cancel()`
+- `retry()`
+- `schedule()`
+- `getStatus()`
+
+Milestone 1 defines these durable queues:
+
+```text
+system-test
+campaign-plan
+campaign-discovery
+business-enrichment
+website-crawl
+business-research
+outreach-generation
 ```
 
-## Milestone 0 user flow
+Each application queue has a corresponding `-dlq` dead-letter queue. Queue definitions centralize concurrency, retry limits, exponential backoff, retry delay caps, expiration, retention, heartbeat, and dead-letter settings. Priority can be supplied per job.
 
-1. Open `http://localhost:3000/register`.
-2. Register with a name, email, password, and workspace name.
-3. Registration creates the user and their first workspace membership atomically.
-4. The user is taken to `/dashboard`.
-5. The dashboard can create additional workspaces and switch between memberships.
-6. Signing out removes the browser session token and returns to login.
+Queue payloads carry identifiers only. The M1 `system-test` payload contains the workspace ID plus the correlated job ID; later milestones should pass entity IDs rather than embedding scraped pages or other large datasets in queue messages.
 
-Backend authorization verifies workspace membership before returning workspace-scoped data. Supplying another workspace ID without membership is rejected by the API.
+### Durable metadata and idempotency
+
+`JobMetadata` projects application-visible job state into PostgreSQL:
+
+```text
+jobId
+queue
+status
+workspaceId
+attempts
+createdAt
+startedAt
+finishedAt
+failureReason
+```
+
+An internal workspace-scoped idempotency key is also persisted with a unique database constraint. A caller-supplied idempotency key makes duplicate scheduling return the already-reserved job instead of creating another executable job. If a key is omitted from `/jobs/test`, the API generates a fresh key so intentional repeated test jobs remain possible.
+
+The metadata row is reserved before publishing to pg-boss. If publication fails, the reservation is removed. The same UUID is used as the application job ID, pg-boss job ID, payload correlation ID, and status lookup ID.
+
+### Jobs API
+
+Both endpoints require the normal bearer session token.
+
+Schedule a test job:
+
+```http
+POST /jobs/test
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "workspaceId": "<workspace-uuid>",
+  "idempotencyKey": "optional-client-request-key"
+}
+```
+
+Successful scheduling returns HTTP `202 Accepted` with the job metadata projection.
+
+Read job status:
+
+```http
+GET /jobs/<job-uuid>
+Authorization: Bearer <token>
+```
+
+The API verifies membership in the job's workspace before returning status.
+
+### Worker behavior
+
+`apps/worker` is a separate process. It opens its own pg-boss instance, registers workers using the concurrency configured in the queue catalog, and currently processes only `system-test` jobs.
+
+For each attempt the processor records `RUNNING` and increments `attempts`. A successful attempt records `COMPLETED`; a failed attempt records `FAILED` with `failureReason` and then rethrows so pg-boss owns retry/backoff and eventual dead-letter behavior.
+
+Stopping or restarting the API does not own or erase queued jobs. A separately started worker can consume jobs already persisted in PostgreSQL.
 
 ## Environment variables
 
@@ -102,55 +150,34 @@ NODE_ENV
 OPENAI_API_KEY
 ```
 
-`OPENAI_API_KEY` is optional in Milestone 0 and is not used yet.
+`OPENAI_API_KEY` remains optional and unused in Milestone 1.
 
-## Database
-
-Validate the Prisma schema:
+## Database commands
 
 ```bash
 pnpm db:validate
-```
-
-Create a development migration after an intentional schema change:
-
-```bash
 pnpm db:migrate
-```
-
-Apply committed migrations without creating new ones:
-
-```bash
 pnpm db:deploy
-```
-
-Stop local PostgreSQL:
-
-```bash
 pnpm db:down
 ```
 
 ## Verification
 
-Run the application checks:
+Run all repository checks:
 
 ```bash
 pnpm verify
 ```
 
-CI additionally starts PostgreSQL, validates and applies migrations, executes the database-backed authentication/workspace integration test, and smoke-starts the compiled API, worker, and web application as independent processes.
+CI starts PostgreSQL, installs from the frozen lockfile, validates and applies Prisma migrations, runs unit and database-backed integration tests, typechecks, lints, builds, and smoke-starts the compiled API, worker, and web applications independently.
 
-## Authentication and tenancy
+The M1 PostgreSQL integration coverage verifies that:
 
-- Passwords are hashed with Argon2.
-- Login sessions use opaque random bearer tokens.
-- Only a SHA-256 hash of each session token is stored in PostgreSQL.
-- Every registered user starts with a workspace and an `OWNER` membership.
-- Workspace-scoped API access is checked against `WorkspaceMember` on the backend.
-- Client-provided workspace IDs are never treated as authorization by themselves.
+- a queued job survives the producer being stopped and is completed by a separately started worker;
+- duplicate scheduling with the same workspace-scoped idempotency key produces one persisted job;
+- failed attempts are retried and attempt counts are persisted;
+- terminal failures remain visible with their failure reason after retries are exhausted.
 
 ## Milestone boundary
 
-Milestone 0 ends with a working authenticated, multi-tenant application foundation and an independently runnable worker.
-
-Milestone 1 will introduce the PostgreSQL-backed job system with pg-boss behind the `QueueService` abstraction. Do not add Redis, BullMQ, RabbitMQ, Kafka, or Temporal to the initial architecture.
+Milestone 1 ends with durable asynchronous job infrastructure. The named future queues exist as infrastructure boundaries, but campaign planning, campaign/lead models, Google Business discovery, enrichment, crawling, AI research, and outreach generation are **not** implemented here. Those belong to Milestone 2 and later milestones.
