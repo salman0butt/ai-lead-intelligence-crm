@@ -29,17 +29,23 @@ function createDb(member: boolean) {
 
 function createQueue() {
   return {
-    enqueue: vi.fn(async () => ({
-      jobId,
-      queue: 'system-test' as const,
-      status: 'QUEUED' as const,
-      workspaceId,
-      attempts: 0,
-      createdAt: new Date('2026-09-01T00:00:00Z'),
-      startedAt: null,
-      finishedAt: null,
-      failureReason: null,
-    })),
+    enqueue: vi.fn(
+      async (
+        _queue: string,
+        _payload: { workspaceId: string },
+        _options?: { idempotencyKey?: string },
+      ) => ({
+        jobId,
+        queue: 'system-test' as const,
+        status: 'QUEUED' as const,
+        workspaceId,
+        attempts: 0,
+        createdAt: new Date('2026-09-01T00:00:00Z'),
+        startedAt: null,
+        finishedAt: null,
+        failureReason: null,
+      }),
+    ),
   };
 }
 
@@ -60,7 +66,7 @@ describe('JobsService', () => {
 
     await service.enqueueTest(userId, { workspaceId });
 
-    const options = queue.enqueue.mock.calls[0]?.[2] as { idempotencyKey?: string } | undefined;
+    const options = queue.enqueue.mock.calls[0]?.[2];
     expect(queue.enqueue).toHaveBeenCalledWith('system-test', { workspaceId }, expect.any(Object));
     expect(options?.idempotencyKey).toMatch(/^system-test:[0-9a-f-]{36}$/);
   });
