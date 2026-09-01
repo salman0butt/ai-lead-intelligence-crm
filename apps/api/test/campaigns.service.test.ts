@@ -72,9 +72,16 @@ function createDb(options: { member?: boolean; status?: Status } = {}) {
   return { db, getCampaign: () => ({ ...campaign }) };
 }
 
+type EnqueueArgs = [
+  queue: string,
+  payload: { workspaceId: string; campaignId: string },
+  options: { idempotencyKey: string },
+];
+
 function createQueue(error?: Error) {
   return {
-    enqueue: vi.fn(async () => {
+    enqueue: vi.fn(async (...args: EnqueueArgs) => {
+      void args;
       if (error) throw error;
       return {
         jobId: '00000000-0000-4000-8000-000000000004',
@@ -156,7 +163,7 @@ describe('CampaignsService', () => {
       { workspaceId, campaignId },
       { idempotencyKey: `campaign-plan:${campaignId}` },
     );
-    expect(Object.keys(queue.enqueue.mock.calls[0]![1] as object).sort()).toEqual(['campaignId', 'workspaceId']);
+    expect(Object.keys(queue.enqueue.mock.calls[0]![1]).sort()).toEqual(['campaignId', 'workspaceId']);
   });
 
   it('rolls a planning transition back to draft when queue publication fails', async () => {
