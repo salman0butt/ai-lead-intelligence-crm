@@ -23,7 +23,12 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - run: pnpm install --lockfile-only --no-frozen-lockfile
+      - name: Rebuild lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f pnpm-lock.yaml
+          pnpm install --lockfile-only --no-frozen-lockfile
       - name: Commit generated lockfile
         shell: bash
         run: |
