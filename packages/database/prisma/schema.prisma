@@ -24,6 +24,7 @@ enum JobStatus {
 enum CampaignStatus {
   DRAFT
   PLANNING
+  DISCOVERING
   PAUSED
   CANCELLED
 }
@@ -49,14 +50,16 @@ model User {
 }
 
 model Workspace {
-  id          String            @id @default(uuid()) @db.Uuid
-  name        String            @db.VarChar(120)
-  members     WorkspaceMember[]
-  jobs        JobMetadata[]
-  campaigns   Campaign[]
-  searchPlans SearchPlan[]
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id                 String              @id @default(uuid()) @db.Uuid
+  name               String              @db.VarChar(120)
+  members            WorkspaceMember[]
+  jobs               JobMetadata[]
+  campaigns          Campaign[]
+  searchPlans        SearchPlan[]
+  businessCandidates BusinessCandidate[]
+  providerUsages     ProviderUsage[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 }
 
 model WorkspaceMember {
@@ -102,21 +105,23 @@ model JobMetadata {
 }
 
 model Campaign {
-  id                 String         @id @default(uuid()) @db.Uuid
-  workspaceId        String         @db.Uuid
-  createdByUserId    String         @db.Uuid
-  name               String         @db.VarChar(160)
-  country            String         @db.VarChar(120)
-  region             String?        @db.VarChar(120)
-  city               String?        @db.VarChar(120)
-  niche              String         @db.VarChar(160)
+  id                 String              @id @default(uuid()) @db.Uuid
+  workspaceId        String              @db.Uuid
+  createdByUserId    String              @db.Uuid
+  name               String              @db.VarChar(160)
+  country            String              @db.VarChar(120)
+  region             String?             @db.VarChar(120)
+  city               String?             @db.VarChar(120)
+  niche              String              @db.VarChar(160)
   requestedLeadCount Int
-  status             CampaignStatus @default(DRAFT)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  workspace          Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdByUser      User           @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  status             CampaignStatus      @default(DRAFT)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser      User                @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   searchPlan         SearchPlan?
+  businessCandidates BusinessCandidate[]
+  providerUsages     ProviderUsage[]
 
   @@index([workspaceId, createdAt])
   @@index([workspaceId, status])
@@ -148,10 +153,72 @@ model SearchTask {
   attemptCount        Int              @default(0)
   resultCount         Int              @default(0)
   uniqueBusinessCount Int              @default(0)
+  nextPageToken       String?
+  pageNumber          Int              @default(1)
   searchPlan          SearchPlan       @relation(fields: [searchPlanId], references: [id], onDelete: Cascade)
+  businessSources     BusinessSource[]
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
   @@unique([searchPlanId, provider, country, region, city, query])
   @@index([searchPlanId, status])
+}
+
+model BusinessCandidate {
+  id                 String           @id @default(uuid()) @db.Uuid
+  workspaceId        String           @db.Uuid
+  campaignId         String           @db.Uuid
+  provider           String           @db.VarChar(80)
+  providerExternalId String           @db.VarChar(255)
+  name               String           @db.VarChar(240)
+  formattedAddress   String
+  category           String?          @db.VarChar(160)
+  latitude           Float?
+  longitude          Float?
+  rawReference       String?          @db.VarChar(500)
+  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign           Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sources            BusinessSource[]
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@unique([campaignId, provider, providerExternalId])
+  @@index([workspaceId, campaignId])
+  @@index([campaignId, provider])
+}
+
+model BusinessSource {
+  id                  String            @id @default(uuid()) @db.Uuid
+  businessCandidateId String            @db.Uuid
+  searchTaskId        String            @db.Uuid
+  provider            String            @db.VarChar(80)
+  providerExternalId  String            @db.VarChar(255)
+  rawPayload          Json
+  businessCandidate   BusinessCandidate @relation(fields: [businessCandidateId], references: [id], onDelete: Cascade)
+  searchTask          SearchTask        @relation(fields: [searchTaskId], references: [id], onDelete: Cascade)
+  createdAt           DateTime          @default(now())
+
+  @@unique([businessCandidateId, searchTaskId])
+  @@index([searchTaskId])
+  @@index([provider, providerExternalId])
+}
+
+model ProviderUsage {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @db.Uuid
+  campaignId     String    @db.Uuid
+  provider       String    @db.VarChar(80)
+  requestCount   Int       @default(0)
+  resultCount    Int       @default(0)
+  errorCount     Int       @default(0)
+  rateLimitCount Int       @default(0)
+  costAmount     Decimal?  @db.Decimal(18, 6)
+  costCurrency   String?   @db.VarChar(3)
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign       Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([campaignId, provider])
+  @@index([workspaceId, campaignId])
 }
