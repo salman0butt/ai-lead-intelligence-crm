@@ -79,16 +79,18 @@ function createBoss() {
       work: async (
         name: string,
         options: Record<string, unknown>,
-        handler: (job: { id: string; data: Record<string, string> }) => Promise<void>,
+        handler: (jobs: Array<{ id: string; data: Record<string, string> }>) => Promise<void>,
       ) => {
         workers.push({ name, options });
-        await handler({
-          id: '00000000-0000-4000-8000-000000000001',
-          data: {
-            jobId: '00000000-0000-4000-8000-000000000001',
-            workspaceId: '00000000-0000-4000-8000-000000000002',
+        await handler([
+          {
+            id: '00000000-0000-4000-8000-000000000001',
+            data: {
+              jobId: '00000000-0000-4000-8000-000000000001',
+              workspaceId: '00000000-0000-4000-8000-000000000002',
+            },
           },
-        });
+        ]);
         return 'worker-1';
       },
     },
@@ -141,10 +143,27 @@ describe('PgBossQueueService', () => {
         priority: 7,
         retryLimit: 3,
         retryBackoff: true,
+        retryDelayMax: 300,
         expireInSeconds: 900,
       },
     });
     expect((boss.sends[0]?.data as { jobId?: string }).jobId).toBe(result.jobId);
+  });
+
+  it('does not send retryDelayMax when exponential backoff is disabled', async () => {
+    const db = createDatabase();
+    const boss = createBoss();
+    const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
+
+    await queue.enqueue(
+      'system-test',
+      { workspaceId: metadata().workspaceId },
+      { retryBackoff: false, retryDelay: 1 },
+    );
+
+    expect(boss.sends[0]?.options.retryBackoff).toBe(false);
+    expect(boss.sends[0]?.options.retryDelay).toBe(1);
+    expect(boss.sends[0]?.options).not.toHaveProperty('retryDelayMax');
   });
 
   it('returns existing metadata when the database idempotency reservation conflicts', async () => {
@@ -182,7 +201,7 @@ describe('PgBossQueueService', () => {
     await expect(queue.getStatus('system-test', existing.jobId)).resolves.toMatchObject({ jobId: existing.jobId });
   });
 
-  it('suffixes bulk idempotency keys and registers configured-concurrency workers', async () => {
+  it('suffixes bulk idempotency keys and registers v12 local-concurrency workers', async () => {
     const db = createDatabase();
     const boss = createBoss();
     const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
@@ -200,7 +219,7 @@ describe('PgBossQueueService', () => {
     await queue.work('system-test', handler);
     expect(boss.workers[0]).toMatchObject({
       name: 'system-test',
-      options: { teamSize: 1, teamConcurrency: 1, newJobCheckIntervalSeconds: 1 },
+      options: { localConcurrency: 1, pollingIntervalSeconds: 1 },
     });
     expect(handler).toHaveBeenCalledOnce();
   });
