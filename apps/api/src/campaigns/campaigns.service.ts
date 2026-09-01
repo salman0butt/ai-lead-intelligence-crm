@@ -57,21 +57,14 @@ export class CampaignsService {
     );
 
     try {
-      const job = await this.queue.enqueue(
-        'campaign-plan',
-        { workspaceId: campaign.workspaceId, campaignId: campaign.id },
-        { idempotencyKey: `campaign-plan:${campaign.id}` },
-      );
+      const job = await this.enqueueCampaignPlan(planningCampaign);
       return { campaign: planningCampaign, job };
     } catch (error) {
-      await this.db.campaign.updateMany({
-        where: {
-          id: campaign.id,
-          workspaceId: campaign.workspaceId,
-          status: CampaignStatus.PLANNING,
-        },
-        data: { status: CampaignStatus.DRAFT },
-      });
+      await this.rollbackPlanningTransition(
+        campaign.id,
+        campaign.workspaceId,
+        CampaignStatus.DRAFT,
+      );
       throw error;
     }
   }
@@ -81,19 +74,31 @@ export class CampaignsService {
     return this.transition(
       campaign.id,
       campaign.workspaceId,
-      CampaignStatus.PLANNING,
+      [CampaignStatus.PLANNING, CampaignStatus.DISCOVERING],
       CampaignStatus.PAUSED,
     );
   }
 
   async resume(userId: string, campaignId: string) {
     const campaign = await this.getAccessibleCampaign(userId, campaignId);
-    return this.transition(
+    const planningCampaign = await this.transition(
       campaign.id,
       campaign.workspaceId,
       CampaignStatus.PAUSED,
       CampaignStatus.PLANNING,
     );
+
+    try {
+      await this.enqueueCampaignPlan(planningCampaign);
+      return planningCampaign;
+    } catch (error) {
+      await this.rollbackPlanningTransition(
+        campaign.id,
+        campaign.workspaceId,
+        CampaignStatus.PAUSED,
+      );
+      throw error;
+    }
   }
 
   async cancel(userId: string, campaignId: string) {
@@ -101,9 +106,43 @@ export class CampaignsService {
     return this.transition(
       campaign.id,
       campaign.workspaceId,
-      [CampaignStatus.DRAFT, CampaignStatus.PLANNING, CampaignStatus.PAUSED],
+      [
+        CampaignStatus.DRAFT,
+        CampaignStatus.PLANNING,
+        CampaignStatus.DISCOVERING,
+        CampaignStatus.PAUSED,
+      ],
       CampaignStatus.CANCELLED,
     );
+  }
+
+  private async enqueueCampaignPlan(campaign: {
+    id: string;
+    workspaceId: string;
+    updatedAt: Date;
+  }) {
+    return this.queue.enqueue(
+      'campaign-plan',
+      { workspaceId: campaign.workspaceId, campaignId: campaign.id },
+      {
+        idempotencyKey: `campaign-plan:${campaign.id}:${campaign.updatedAt.toISOString()}`,
+      },
+    );
+  }
+
+  private async rollbackPlanningTransition(
+    campaignId: string,
+    workspaceId: string,
+    previousStatus: CampaignStatus.DRAFT | CampaignStatus.PAUSED,
+  ): Promise<void> {
+    await this.db.campaign.updateMany({
+      where: {
+        id: campaignId,
+        workspaceId,
+        status: CampaignStatus.PLANNING,
+      },
+      data: { status: previousStatus },
+    });
   }
 
   private async getAccessibleCampaign(userId: string, campaignId: string) {
