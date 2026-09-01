@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { processCampaignPlanJob } from '../src/campaign-plan.processor.js';
+import { processCampaignPlanJob, type CampaignPlanPayload } from '../src/campaign-plan.processor.js';
 
 const jobId = '00000000-0000-4000-8000-000000000001';
 const workspaceId = '00000000-0000-4000-8000-000000000002';
@@ -50,7 +50,9 @@ function createDb() {
 describe('processCampaignPlanJob', () => {
   it('tracks one successful injected campaign planning attempt with identifier-only payload', async () => {
     const db = createDb();
-    const task = vi.fn(async () => undefined);
+    const task = vi.fn(async (...args: [CampaignPlanPayload]) => {
+      void args;
+    });
 
     await processCampaignPlanJob(
       db.client as never,
@@ -58,8 +60,9 @@ describe('processCampaignPlanJob', () => {
       task,
     );
 
-    expect(task).toHaveBeenCalledWith({ jobId, workspaceId, campaignId });
-    expect(Object.keys(task.mock.calls[0]![0]).sort()).toEqual(['campaignId', 'jobId', 'workspaceId']);
+    const payload = task.mock.calls[0]?.[0];
+    expect(payload).toEqual({ jobId, workspaceId, campaignId });
+    expect(Object.keys(payload!).sort()).toEqual(['campaignId', 'jobId', 'workspaceId']);
     expect(db.updates).toHaveLength(2);
     expect(db.updates[0]).toMatchObject({ status: 'RUNNING', attempts: { increment: 1 } });
     expect(db.updates[1]).toMatchObject({ status: 'COMPLETED', failureReason: null });
