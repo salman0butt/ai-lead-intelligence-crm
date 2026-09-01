@@ -26,6 +26,9 @@ importers:
       '@ai-crm/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@ai-crm/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@ai-crm/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -112,6 +115,9 @@ importers:
       '@ai-crm/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@ai-crm/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
