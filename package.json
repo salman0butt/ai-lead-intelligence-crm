@@ -10,7 +10,7 @@
     "db:validate": "pnpm --filter @ai-crm/database prisma:validate",
     "db:migrate": "pnpm --filter @ai-crm/database prisma:migrate:dev",
     "db:deploy": "pnpm --filter @ai-crm/database prisma:migrate:deploy",
-    "build:packages": "pnpm --filter @ai-crm/config build && pnpm --filter @ai-crm/schemas build && pnpm --filter @ai-crm/shared build && pnpm --filter @ai-crm/database build && pnpm --filter @ai-crm/queue build",
+    "build:packages": "pnpm --filter @ai-crm/config build && pnpm --filter @ai-crm/schemas build && pnpm --filter @ai-crm/shared build && pnpm --filter @ai-crm/database build && pnpm --filter @ai-crm/discovery build && pnpm --filter @ai-crm/queue build",
     "pretest": "pnpm run db:generate && pnpm run build:packages",
     "test": "pnpm -r --if-present test",
     "pretypecheck": "pnpm run db:generate",
