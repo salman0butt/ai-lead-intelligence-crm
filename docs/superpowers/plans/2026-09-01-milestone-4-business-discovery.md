@@ -2,614 +2,518 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Execute durable provider-isolated business discovery from M3 SearchTasks, normalize/store candidates with provenance and provider usage, and make pagination/pause/resume crash-safe.
+**Goal:** Execute durable provider-isolated business discovery from M3 SearchTasks using AI-guided Playwright browser access rather than Google Places API, normalize/store candidates with provenance and source usage, and make browser continuation/pause/resume crash-safe.
 
-**Architecture:** Add a provider-neutral `@ai-crm/discovery` package with a real Google Places Text Search adapter. Persist candidate/provenance/usage/cursor state in Prisma. Extend the existing campaign-plan worker into an idempotent planning-to-discovery scheduler and add a `campaign-discovery` worker whose queue payload contains identifiers/version/page only while provider page tokens remain in PostgreSQL.
+**Architecture:** Keep the existing M4 PostgreSQL/pg-boss orchestration and provider registry, replace the Google Places API adapter with a `google-maps-browser` Playwright provider, and replace API page-token state with a provider-neutral PostgreSQL continuation cursor. Deterministic DOM/accessibility extraction is primary; an optional AI page interpreter is a bounded recovery layer for ambiguous layouts and blocked/consent classification, never a CAPTCHA/access-control bypass.
 
-**Tech Stack:** TypeScript 6, PostgreSQL 17, Prisma, pg-boss 12.28.0, native fetch, Zod config, Vitest, GitHub Actions CI.
+**Tech Stack:** TypeScript 6, PostgreSQL 17, Prisma, pg-boss 12.28.0, Playwright 1.62.1 with Chromium, optional OpenAI Responses API through native `fetch`, Zod config, Vitest, GitHub Actions CI.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-milestone-4-business-discovery-design.md`
 
 ## Global Constraints
 
 - Keep PostgreSQL/pg-boss; do not add Redis, BullMQ, RabbitMQ, Kafka, or Temporal.
-- Provider code must remain isolated in `packages/discovery`.
-- Standard CI must not require or spend a Google Places credential.
-- Use Places API (New) Text Search through native `fetch`, not a Google SDK.
-- Keep provider page tokens in PostgreSQL, not as the queue source of truth.
-- `campaign-discovery` remains the established queue name.
-- Do not introduce canonical `Business` deduplication, website verification, crawling, contact enrichment, audit, AI research, result UI, or outreach in M4.
-- Every production behavior follows TDD: failing behavior test first, expected RED, minimal implementation, green verification.
+- Do not use Google Places API, Google SDK, `GOOGLE_PLACES_API_KEY`, hidden Maps data endpoints, or undocumented internal APIs.
+- Provider/browser code stays isolated in `packages/discovery`; campaign/domain code remains source-neutral.
+- First production source is `google-maps-browser` using rendered public browser content.
+- Do not bypass CAPTCHA, login walls, paywalls, anti-bot controls, or other access restrictions.
+- Do not add stealth plugins, fingerprint spoofing, proxy rotation, identity rotation, or CAPTCHA solving.
+- Standard CI uses local rendered fixtures and needs no Google or AI credential.
+- Playwright version is pinned at `1.62.1`; CI explicitly installs Chromium/browser dependencies.
+- Browser continuation state lives in PostgreSQL, never only in queue payload or process memory.
+- `campaign-discovery` remains the queue name.
+- M4 does not implement M5 canonical/fuzzy deduplication, M6 domain verification, M7 crawling, M8 contact enrichment, M9 audit, M10 lead research, M16 results UI, or outreach.
+- Every behavior change follows RED -> minimal implementation -> exact-head GREEN CI.
+
+## Current checkpoint
+
+Already implemented and retained from the pre-pivot M4 branch:
+
+- `BusinessCandidate`, `BusinessSource`, `ProviderUsage` persistence.
+- `CampaignStatus.DISCOVERING` and pause/resume/cancel generation behavior.
+- planning-to-discovery pg-boss scheduling.
+- `campaign-discovery` identifier/version/page payload and deterministic idempotency.
+- initial worker-side discovery persistence processor.
+- provider-neutral registry/types foundation.
+
+Pre-pivot Google Places API files/config/tests are temporary branch code and must be removed/replaced before M4 review.
 
 ---
 
-### Task 1: Create the discovery provider package and Google adapter
+### Task 1: Remove Google API assumptions and make provider/cursor state browser-neutral
 
 **Files:**
-- Modify: `package.json`
-- Create: `packages/discovery/package.json`
-- Create: `packages/discovery/tsconfig.json`
-- Create: `packages/discovery/tsconfig.build.json`
-- Create: `packages/discovery/src/types.ts`
-- Create: `packages/discovery/src/provider-registry.ts`
-- Create: `packages/discovery/src/google-places.provider.ts`
-- Create: `packages/discovery/src/index.ts`
-- Create: `packages/discovery/test/google-places.provider.test.ts`
-- Create: `packages/discovery/test/provider-registry.test.ts`
+- Modify: `packages/discovery/src/types.ts`
+- Modify: `packages/discovery/src/index.ts`
+- Delete: `packages/discovery/src/google-places.provider.ts`
+- Delete: `packages/discovery/test/google-places.provider.test.ts`
 - Modify: `packages/config/src/env.ts`
-- Modify: `.env.example`
 - Modify: `packages/config/test/env.test.ts`
+- Modify: `.env.example`
+- Modify: `packages/database/prisma/schema.prisma`
+- Modify: `packages/database/prisma/migrations/20260901120000_business_discovery/migration.sql`
+- Modify: `apps/worker/src/search-planner/search-planner.ts`
+- Modify: `apps/worker/test/search-planner.integration.test.ts`
+- Modify: `apps/worker/test/business-discovery-persistence.integration.test.ts`
 
-**Interfaces:**
+**Produces:**
 
 ```ts
-export interface BusinessSearchInput {
-  query: string;
-  country: string;
-  region: string;
-  city: string;
-  geographicCell: string;
-  pageSize?: number;
-}
-
 export interface BusinessDiscoveryPage<TRaw> {
   results: readonly TRaw[];
-  nextPageToken: string | null;
-}
-
-export interface NormalizedBusiness {
-  providerExternalId: string;
-  name: string;
-  formattedAddress: string;
-  category: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  rawReference: string | null;
+  nextCursor: string | null;
 }
 
 export interface BusinessDiscoveryProvider<TRaw = unknown> {
   readonly name: string;
   searchBusinesses(input: BusinessSearchInput): Promise<BusinessDiscoveryPage<TRaw>>;
-  getNextPage(input: BusinessSearchInput, pageToken: string): Promise<BusinessDiscoveryPage<TRaw>>;
+  continueSearch(input: BusinessSearchInput, cursor: string): Promise<BusinessDiscoveryPage<TRaw>>;
   normalizeResult(raw: TRaw): NormalizedBusiness;
+  close?(): Promise<void>;
 }
 ```
 
-- [ ] **Step 1: write provider/config tests before package implementation**
-
-Tests must assert:
-
-```ts
-expect(serverEnvSchema.parse({ ...base, GOOGLE_PLACES_API_KEY: '' }).GOOGLE_PLACES_API_KEY).toBeUndefined();
-```
-
-Google provider test uses injected `fetch` and asserts:
-
-```ts
-expect(fetcher).toHaveBeenCalledWith(
-  'https://places.googleapis.com/v1/places:searchText',
-  expect.objectContaining({ method: 'POST' }),
-);
-```
-
-Request JSON for `{ query: 'Dentist', country: 'United States', region: 'Texas', city: '', geographicCell: '' }` must include:
-
-```ts
-{ textQuery: 'Dentist in Texas', pageSize: 20 }
-```
-
-Headers must include the API key and exact field mask from the spec.
-
-A next-page call must include the same `textQuery`/`pageSize` plus `pageToken`.
-
-Normalization fixture:
-
-```ts
-{
-  id: 'place-1',
-  displayName: { text: 'Example Dental' },
-  formattedAddress: '123 Main St, Austin, TX',
-  primaryType: 'dentist',
-  location: { latitude: 30.1, longitude: -97.7 },
-}
-```
-
-must normalize to the provider-neutral shape.
-
-429 response must reject with a `DiscoveryProviderError` having `statusCode === 429` and `rateLimited === true`.
-
-Registry test must resolve a registered `google-places` provider and throw a clear error for an unknown/unconfigured provider.
-
-- [ ] **Step 2: enable M4 branch CI and run to verify RED**
-
-Modify `.github/workflows/ci.yml` push branches to include `feat/milestone-4-business-discovery`.
-
-Expected RED: missing `@ai-crm/discovery` files/types and missing Google config.
-
-- [ ] **Step 3: implement package/config minimally**
-
-`GooglePlacesDiscoveryProvider` constructor:
-
-```ts
-constructor(apiKey: string, fetcher: typeof fetch = fetch)
-```
-
-Field mask:
-
-```text
-places.id,places.displayName,places.formattedAddress,places.primaryType,places.location,nextPageToken
-```
-
-Text target selection:
-
-```ts
-const place = input.geographicCell || input.city || input.region || input.country;
-const textQuery = `${input.query} in ${place}`;
-```
-
-Export package interfaces, typed error, Google adapter, and registry from `src/index.ts`.
-
-Add optional `GOOGLE_PLACES_API_KEY` to server env and `.env.example`.
-
-Update root `build:packages` so discovery builds before worker tests/builds.
-
-- [ ] **Step 4: run full CI and verify package/config GREEN**
-
-Required gates: migrations unchanged, tests, typecheck, lint, build, smoke.
-
-- [ ] **Step 5: commit**
-
-Commit message: `feat: add business discovery provider package`.
-
----
-
-### Task 2: Persist discovery candidates, provenance, usage, cursor, and DISCOVERING lifecycle
-
-**Files:**
-- Modify: `packages/database/prisma/schema.prisma`
-- Create: `packages/database/prisma/migrations/20260901120000_business_discovery/migration.sql`
-- Modify: `packages/database/src/index.ts`
-- Create: `apps/worker/test/business-discovery-persistence.integration.test.ts`
-- Modify: `apps/api/test/campaigns.service.test.ts`
-- Modify: `apps/api/src/campaigns/campaigns.service.ts`
-- Modify: `apps/web/lib/campaigns.ts`
-- Modify: `apps/web/test/campaigns.test.ts`
-
-**Interfaces:**
-- Adds `CampaignStatus.DISCOVERING`.
-- Adds Prisma models `BusinessCandidate`, `BusinessSource`, `ProviderUsage`.
-- Extends `SearchTask` with `nextPageToken` and `pageNumber`.
-
-- [ ] **Step 1: write failing persistence tests**
-
-Create a real SearchTask and verify new defaults:
-
-```ts
-expect(task.pageNumber).toBe(1);
-expect(task.nextPageToken).toBeNull();
-```
-
-Create a `BusinessCandidate`, source, and usage row and verify defaults:
-
-```ts
-expect(usage.requestCount).toBe(0);
-expect(usage.resultCount).toBe(0);
-expect(usage.errorCount).toBe(0);
-expect(usage.rateLimitCount).toBe(0);
-```
-
-Attempt duplicate candidate with same campaign/provider/providerExternalId and assert database uniqueness rejection or upsert reuse. Attempt duplicate source candidate+task and assert uniqueness.
-
-- [ ] **Step 2: write lifecycle RED tests**
-
-Update service tests to require:
-
-```text
-pause: PLANNING -> PAUSED
-pause: DISCOVERING -> PAUSED
-resume: PAUSED -> PLANNING + fresh campaign-plan enqueue
-cancel: DISCOVERING -> CANCELLED
-```
-
-Resume enqueue payload remains `{workspaceId,campaignId}` and idempotency key must contain the post-transition `updatedAt` generation.
-
-Update frontend status/action helper tests so DISCOVERING exposes `pause` and `cancel`.
-
-- [ ] **Step 3: run CI and verify RED**
-
-Expected failures: missing Prisma fields/models/status plus old resume behavior.
-
-- [ ] **Step 4: implement Prisma schema/migration**
-
-Add:
+SearchTask field:
 
 ```prisma
-DISCOVERING
+continuationCursor String? @db.Text
+pageNumber         Int     @default(1)
 ```
 
-and the models/fields exactly as specified in the design. Use `Decimal? @db.Decimal(18, 6)` for `ProviderUsage.costAmount`; JSON provenance uses `Json`.
+- [ ] **Step 1: write failing tests for the new contract**
 
-Add indexes on workspace/campaign/provider and search-task relations needed by M4 queries.
-
-- [ ] **Step 5: implement lifecycle changes**
-
-Refactor campaign plan publication to a private helper:
+Update persistence test:
 
 ```ts
-private async enqueueCampaignPlan(campaign: Campaign) {
-  return this.queue.enqueue(
-    'campaign-plan',
-    { workspaceId: campaign.workspaceId, campaignId: campaign.id },
-    { idempotencyKey: `campaign-plan:${campaign.id}:${campaign.updatedAt.toISOString()}` },
-  );
-}
+expect(task.continuationCursor).toBeNull();
+expect(task.pageNumber).toBe(1);
 ```
 
-`start()` transitions to PLANNING and calls it. `resume()` transitions PAUSED -> PLANNING and calls it with rollback to PAUSED on publication failure. `pause()` accepts PLANNING or DISCOVERING. `cancel()` includes DISCOVERING.
-
-- [ ] **Step 6: run full CI and verify GREEN**
-
-- [ ] **Step 7: commit**
-
-Commit message: `feat: persist business discovery state`.
-
----
-
-### Task 3: Schedule SearchTasks after campaign planning
-
-**Files:**
-- Create: `apps/worker/src/discovery-scheduler.ts`
-- Create: `apps/worker/test/discovery-scheduler.test.ts`
-- Modify: `apps/worker/src/campaign-plan.processor.ts`
-- Modify: `apps/worker/test/campaign-plan.processor.test.ts`
-- Modify: `apps/worker/src/job-worker.ts`
-
-**Interfaces:**
+Update planner integration:
 
 ```ts
-export interface DiscoveryJobPayloadInput {
-  workspaceId: string;
-  campaignId: string;
-  searchTaskId: string;
-  campaignVersion: string;
-  pageNumber: string;
-}
-
-export async function scheduleSearchTaskDiscovery(
-  queue: QueueService,
-  input: DiscoveryJobPayloadInput,
-): Promise<QueueJobResult>
+expect(new Set(tasks.map((task) => task.provider))).toEqual(new Set(['google-maps-browser']));
 ```
 
-Idempotency:
-
-```text
-campaign-discovery:<searchTaskId>:<campaignVersion>:page:<pageNumber>
-```
-
-- [ ] **Step 1: write failing scheduler tests**
-
-Assert exact queue name, identifier/version/page payload, and idempotency key.
-
-Assert scheduling 3 SearchTasks creates 3 independent queue calls.
-
-- [ ] **Step 2: write failing production campaign-plan handoff test**
-
-Use a DB/queue mock where planning returns/reuses tasks. Require the default processor to:
-
-1. create/reuse planning.
-2. transition campaign `PLANNING -> DISCOVERING` conditionally.
-3. schedule each unfinished task using the DISCOVERING row's `updatedAt` as version.
-
-Replay from already `DISCOVERING` must schedule pending/failed tasks again through deterministic idempotency without changing the campaign generation.
-
-PAUSED/CANCELLED after planning must schedule nothing.
-
-- [ ] **Step 3: run CI and verify RED**
-
-- [ ] **Step 4: implement scheduler and campaign-plan orchestration**
-
-Change `processCampaignPlanJob` production signature to receive a `QueueService` (preserve injected task seam for focused tests). `registerJobWorkers` passes the existing queue.
-
-Use conditional `campaign.updateMany` for `PLANNING -> DISCOVERING`; if it loses a race, reload and accept `DISCOVERING`, `PAUSED`, or `CANCELLED` according to the spec.
-
-Read SearchTasks where status is `PENDING` or `FAILED` and schedule their persisted `pageNumber`.
-
-- [ ] **Step 5: update real pg-boss planning integration**
-
-After an independent campaign-plan worker completes, assert:
-
-- campaign is `DISCOVERING`.
-- SearchTasks exist.
-- `JobMetadata` contains `campaign-discovery` jobs for tasks.
-
-Do not consume those discovery jobs in this task.
-
-- [ ] **Step 6: run full CI and verify GREEN**
-
-- [ ] **Step 7: commit**
-
-Commit message: `feat: schedule campaign discovery work`.
-
----
-
-### Task 4: Execute one discovery page transactionally
-
-**Files:**
-- Create: `apps/worker/src/business-discovery.processor.ts`
-- Create: `apps/worker/test/business-discovery.processor.test.ts`
-- Create: `apps/worker/test/business-discovery.integration.test.ts`
-- Modify: `apps/worker/src/job-worker.ts`
-- Modify: `apps/worker/src/main.ts`
-- Modify: `apps/worker/package.json`
-
-**Interfaces:**
+Update config tests:
 
 ```ts
-export interface CampaignDiscoveryPayload extends QueuePayload {
-  campaignId: string;
-  searchTaskId: string;
-  campaignVersion: string;
-  pageNumber: string;
-}
-
-export async function processBusinessDiscoveryJob(
-  database: DatabaseClient,
-  queue: QueueService,
-  providers: DiscoveryProviderRegistry,
-  job: QueueWorkJob,
-): Promise<void>
+expect(env).not.toHaveProperty('GOOGLE_PLACES_API_KEY');
 ```
 
-- [ ] **Step 1: write RED tests for stale validation and provider isolation**
+Update provider contract test fixture so provider implementations expose `continueSearch()` and pages expose `nextCursor`.
 
-Cases:
+- [ ] **Step 2: run CI and verify RED**
 
-- payload workspace/campaign/task mismatch -> reject before provider call.
-- campaign PAUSED/CANCELLED -> success no-op, provider not called.
-- campaign version mismatch -> success no-op.
-- COMPLETED/CANCELLED SearchTask -> success no-op.
-- page higher than persisted page -> reject.
+Expected failures: old `nextPageToken`, `getNextPage`, `google-places`, and Google API config remain.
 
-- [ ] **Step 2: write RED happy-path integration test**
+- [ ] **Step 3: implement browser-neutral contract minimally**
 
-Create a DISCOVERING campaign, plan, SearchTask, registry with deterministic fake provider returning two raw businesses, then process one job.
+Rename `nextPageToken -> continuationCursor` in Prisma and worker-facing code. Rename `getNextPage -> continueSearch`, `nextPageToken -> nextCursor` in discovery package types.
 
-Assert:
-
-```text
-SearchTask COMPLETED
-attemptCount 1
-resultCount 2
-uniqueBusinessCount 2
-2 BusinessCandidate rows
-2 BusinessSource rows
-ProviderUsage requestCount 1
-ProviderUsage resultCount 2
-```
-
-Process equivalent discovery from another SearchTask returning one existing provider ID plus one new provider ID. Assert candidate total becomes 3, not 4, while provenance reflects both SearchTasks.
-
-- [ ] **Step 3: run CI and verify RED**
-
-- [ ] **Step 4: implement claim/provider/result transaction**
-
-Before call, atomically claim `PENDING | FAILED -> RUNNING` and increment attempts.
-
-Upsert aggregate ProviderUsage and increment request before I/O.
-
-Normalize all provider records before transaction; invalid raw records throw and use provider failure path rather than silently fabricating identifiers.
-
-Within result transaction upsert candidates, insert provenance idempotently, update counters/cursor/status, and increment usage results.
-
-- [ ] **Step 5: implement provider failure path**
-
-On any provider call error:
-
-```text
-RUNNING -> FAILED
-ProviderUsage.errorCount += 1
-ProviderUsage.rateLimitCount += 1 only for DiscoveryProviderError.rateLimited
-throw
-```
-
-Do not modify campaign status.
-
-Unit/integration tests assert unrelated SearchTasks and campaign DISCOVERING state remain intact.
-
-- [ ] **Step 6: compose provider registry in worker main**
-
-Add `@ai-crm/discovery` dependency to worker.
-
-Worker startup:
+Change planner default constant to:
 
 ```ts
-const providers = new DiscoveryProviderRegistry();
-if (env.GOOGLE_PLACES_API_KEY) {
-  providers.register(new GooglePlacesDiscoveryProvider(env.GOOGLE_PLACES_API_KEY));
-}
+export const DEFAULT_DISCOVERY_PROVIDER = 'google-maps-browser';
 ```
 
-Register the `campaign-discovery` consumer even when registry is empty.
+Add to the still-unmerged M4 migration after SearchTask column creation:
 
-- [ ] **Step 7: run full CI and verify GREEN**
-
-- [ ] **Step 8: commit**
-
-Commit message: `feat: process business discovery pages`.
-
----
-
-### Task 5: Make pagination crash-safe and resumable
-
-**Files:**
-- Modify: `apps/worker/src/business-discovery.processor.ts`
-- Modify: `apps/worker/test/business-discovery.processor.test.ts`
-- Modify: `apps/worker/test/business-discovery.integration.test.ts`
-
-- [ ] **Step 1: write RED next-page test**
-
-Fake provider returns page 1 with `nextPageToken = 'token-2'`.
-
-After processing assert:
-
-```text
-SearchTask.status == PENDING
-SearchTask.pageNumber == 2
-SearchTask.nextPageToken == 'token-2'
+```sql
+UPDATE "SearchTask"
+SET "provider" = 'google-maps-browser'
+WHERE "provider" = 'google-places';
 ```
 
-and queue receives page 2 with deterministic idempotency.
-
-Process page 2 and assert provider `getNextPage()` receives the persisted token, task becomes COMPLETED, and token becomes null.
-
-- [ ] **Step 2: write RED crash-repair test**
-
-Make page-2 enqueue throw after page-1 persistence. Assert the page-1 job rejects while DB remains at page 2/token-2.
-
-Replay the original page-1 payload. Assert:
-
-- provider call count remains one.
-- processor schedules page 2 from persisted state.
-- result counters do not increment again.
-
-- [ ] **Step 3: run CI and verify RED**
-
-- [ ] **Step 4: implement page-ahead repair path**
-
-When `payloadPage < task.pageNumber`:
-
-```ts
-if (task.nextPageToken) {
-  await scheduleSearchTaskDiscovery(queue, current persisted page/version identifiers);
-}
-return;
-```
-
-Do not claim the task or call the provider in this path.
-
-After a successful current-page transaction with a next token, schedule the new persisted page. Let scheduling errors rethrow so pg-boss invokes repair on retry.
-
-- [ ] **Step 5: run full CI and verify GREEN**
-
-- [ ] **Step 6: commit**
-
-Commit message: `feat: make discovery pagination resumable`.
-
----
-
-### Task 6: Verify pause/resume generation behavior end-to-end
-
-**Files:**
-- Modify: `apps/worker/test/business-discovery.integration.test.ts`
-- Modify: `apps/api/test/campaigns.service.test.ts`
-
-- [ ] **Step 1: add RED integration sequence**
-
-Sequence:
-
-1. campaign DISCOVERING generation A with queued discovery job A.
-2. transition campaign to PAUSED.
-3. process old job A and assert provider not called.
-4. API resume transitions PAUSED -> PLANNING and publishes fresh campaign-plan generation B.
-5. campaign-plan replay returns to DISCOVERING and schedules unfinished task with generation C (the DISCOVERING row version).
-6. process fresh discovery job and assert provider is called and candidate persisted.
-
-Also cancel a DISCOVERING campaign and verify an old queued job performs no provider I/O.
-
-- [ ] **Step 2: run CI and verify RED if any lifecycle gap remains**
-
-- [ ] **Step 3: make only minimal production corrections required by the sequence**
-
-No new orchestration subsystem is allowed; use existing campaign service, planner replay, version checks, and deterministic idempotency.
+Remove `GOOGLE_PLACES_API_KEY` from config/env example/tests and delete the API adapter/tests/exports.
 
 - [ ] **Step 4: run full CI and verify GREEN**
 
 - [ ] **Step 5: commit**
 
-Commit message: `test: verify resumable campaign discovery lifecycle`.
+Commit: `refactor: make discovery browser-native`.
 
 ---
 
-### Task 7: Live-provider opt-in, docs, review, and merge gate
+### Task 2: Add Playwright browser runtime and deterministic Maps listing identity
 
 **Files:**
-- Create: `packages/discovery/test/google-places.live.test.ts`
-- Modify: `README.md`
-- Create or Modify: `docs/milestones/STATUS.md`
-- Review: full diff from M3 `main` to M4 candidate.
+- Modify: `packages/discovery/package.json`
+- Modify: `pnpm-lock.yaml`
+- Create: `packages/discovery/src/browser/browser-session.ts`
+- Create: `packages/discovery/src/browser/maps-url.ts`
+- Create: `packages/discovery/src/browser/browser-errors.ts`
+- Create: `packages/discovery/test/maps-url.test.ts`
+- Create: `packages/discovery/test/browser-session.test.ts`
+- Modify: `.github/workflows/ci.yml`
 
-- [ ] **Step 1: add opt-in live Google test**
+**Produces:**
+
+```ts
+export interface BrowserRuntimeOptions {
+  headless: boolean;
+  navigationTimeoutMs: number;
+  actionTimeoutMs: number;
+}
+
+export class BrowserSessionFactory {
+  constructor(options: BrowserRuntimeOptions);
+  open(): Promise<{ browser: Browser; context: BrowserContext; page: Page }>;
+}
+
+export class DiscoveryAccessBlockedError extends DiscoveryProviderError {
+  readonly blocked = true;
+}
+```
+
+Identity helpers:
+
+```ts
+export function buildGoogleMapsSearchUrl(searchText: string): string;
+export function normalizeMapsListingUrl(url: string): string;
+export function mapsListingExternalId(url: string): string;
+```
+
+- [ ] **Step 1: write failing URL/identity tests**
+
+```ts
+expect(buildGoogleMapsSearchUrl('Dentist in Austin, Texas, United States'))
+  .toBe('https://www.google.com/maps/search/?api=1&query=Dentist%20in%20Austin%2C%20Texas%2C%20United%20States');
+```
+
+Given two listing URLs that differ only by tracking query/hash, assert normalized URL and SHA-256 fallback ID are identical.
+
+- [ ] **Step 2: write failing browser-session lifecycle test**
+
+Inject a fake Playwright launcher and assert `open()` applies headless/timeouts and returns isolated browser/context/page handles.
+
+- [ ] **Step 3: run CI and verify RED**
+
+Expected: missing browser modules/Playwright dependency.
+
+- [ ] **Step 4: add `playwright: 1.62.1` and implement helpers/runtime**
+
+Use the Playwright library package, not `@playwright/test`, for production automation.
+
+- [ ] **Step 5: update CI browser install**
+
+After frozen dependency install, add:
+
+```yaml
+- name: Install Playwright Chromium
+  run: pnpm exec playwright install --with-deps chromium
+```
+
+This follows Playwright's supported CI/browser installation model.
+
+- [ ] **Step 6: regenerate lockfile without weakening frozen CI and run full GREEN**
+
+- [ ] **Step 7: commit**
+
+Commit: `feat: add Playwright discovery runtime`.
+
+---
+
+### Task 3: Implement deterministic rendered Google Maps extraction with durable cursor
+
+**Files:**
+- Create: `packages/discovery/src/browser/maps-listing-extractor.ts`
+- Create: `packages/discovery/src/browser/google-maps-browser.provider.ts`
+- Create: `packages/discovery/src/browser/cursor.ts`
+- Modify: `packages/discovery/src/index.ts`
+- Create: `packages/discovery/test/fixtures/maps-results-page.html`
+- Create: `packages/discovery/test/fixtures/maps-blocked-page.html`
+- Create: `packages/discovery/test/google-maps-browser.provider.test.ts`
+- Create: `packages/discovery/test/google-maps-browser.integration.test.ts`
+
+**Cursor:**
+
+```ts
+interface GoogleMapsCursorV1 {
+  v: 1;
+  seenIds: string[];
+  scrollRounds: number;
+}
+```
+
+Validation limits:
+
+```text
+pageSize default 20, max 50
+seenIds max 500
+scrollRounds max 100
+max empty scroll rounds 3
+```
+
+**Raw listing:**
+
+```ts
+export interface GoogleMapsBrowserListing {
+  name: string;
+  formattedAddress: string;
+  category: string | null;
+  listingUrl: string;
+  latitude: number | null;
+  longitude: number | null;
+}
+```
+
+- [ ] **Step 1: write RED fixture extraction tests**
+
+Serve fixture HTML from a local HTTP server or set page content in an injected page. Require extraction of two visible cards and no website/email/phone extraction.
+
+- [ ] **Step 2: write RED continuation tests**
+
+Page 1 returns two listings and a cursor containing their external IDs. `continueSearch()` reopens the search, skips those IDs, scrolls and returns the next unique listing. End-of-feed returns `nextCursor: null`.
+
+- [ ] **Step 3: write RED blocked/access test**
+
+Fixture with CAPTCHA/login/blocked markers must reject with `DiscoveryAccessBlockedError`; assert no attempt to click/solve the challenge.
+
+- [ ] **Step 4: run CI and verify RED**
+
+- [ ] **Step 5: implement deterministic extractor/provider**
+
+Search text:
+
+```ts
+const place = input.geographicCell || input.city || input.region || input.country;
+const searchText = `${input.query} in ${place}`;
+```
+
+Provider name:
+
+```ts
+readonly name = 'google-maps-browser';
+```
+
+Use rendered public anchors/cards and accessible labels. Do not inspect intercepted network responses for hidden business datasets.
+
+- [ ] **Step 6: run real Chromium local-fixture integration GREEN**
+
+- [ ] **Step 7: run full CI GREEN**
+
+- [ ] **Step 8: commit**
+
+Commit: `feat: discover businesses through Playwright`.
+
+---
+
+### Task 4: Add optional AI page interpretation without making AI the hot-path parser
+
+**Files:**
+- Create: `packages/discovery/src/browser/page-interpreter.ts`
+- Create: `packages/discovery/src/browser/openai-page-interpreter.ts`
+- Create: `packages/discovery/test/page-interpreter.test.ts`
+- Create: `packages/discovery/test/openai-page-interpreter.test.ts`
+- Modify: `packages/discovery/src/browser/google-maps-browser.provider.ts`
+- Modify: `packages/config/src/env.ts`
+- Modify: `packages/config/test/env.test.ts`
+- Modify: `.env.example`
+
+**Produces:**
+
+```ts
+export type BrowserPageKind =
+  | 'RESULTS_PAGE'
+  | 'NO_RESULTS'
+  | 'BLOCKED_OR_CAPTCHA'
+  | 'CONSENT_PAGE'
+  | 'UNKNOWN_LAYOUT';
+
+export interface BrowserPageInterpreter {
+  interpret(input: {
+    url: string;
+    title: string;
+    visibleText: string;
+    accessibilitySnapshot: string;
+  }): Promise<{ kind: BrowserPageKind; resultContainerHint?: string }>;
+}
+```
+
+Environment:
+
+```text
+DISCOVERY_AI_MODEL=<optional>
+OPENAI_API_KEY=<existing optional secret>
+```
+
+- [ ] **Step 1: write RED fallback invocation test**
+
+Normal deterministic fixture succeeds and interpreter mock call count stays `0`.
+
+Unknown-layout fixture invokes interpreter exactly once.
+
+- [ ] **Step 2: write RED privacy/sanitization test**
+
+Assert OpenAI adapter request contains only bounded `url`, `title`, visible text and accessibility snapshot; it must not accept/pass cookies, headers, localStorage, sessionStorage, or network payloads.
+
+- [ ] **Step 3: write RED blocked classification test**
+
+AI classification `BLOCKED_OR_CAPTCHA` must throw `DiscoveryAccessBlockedError`; no subsequent navigation/action is attempted.
+
+- [ ] **Step 4: implement optional native-fetch OpenAI interpreter**
+
+Do not add OpenAI SDK solely for this task. Use the existing `OPENAI_API_KEY` and configurable `DISCOVERY_AI_MODEL` only when both are configured. Standard CI uses mocked fetch and makes no paid request.
+
+- [ ] **Step 5: run full CI GREEN**
+
+- [ ] **Step 6: commit**
+
+Commit: `feat: add AI browser page interpretation`.
+
+---
+
+### Task 5: Adapt discovery processor and worker composition to browser provider
+
+**Files:**
+- Modify: `apps/worker/src/business-discovery.processor.ts`
+- Modify: `apps/worker/test/business-discovery.integration.test.ts`
+- Create/Modify: `apps/worker/test/business-discovery.processor.test.ts`
+- Modify: `apps/worker/src/job-worker.ts`
+- Modify: `apps/worker/test/job-worker.test.ts`
+- Modify: `apps/worker/src/main.ts`
+- Modify: `apps/worker/package.json`
+- Modify: `packages/config/src/env.ts`
+- Modify: `.env.example`
+
+**Environment defaults:**
+
+```text
+DISCOVERY_BROWSER_HEADLESS=true
+DISCOVERY_BROWSER_CONCURRENCY=1
+DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS=30000
+DISCOVERY_BROWSER_ACTION_TIMEOUT_MS=10000
+```
+
+- [ ] **Step 1: write RED stale-job browser safety tests**
+
+Paused/cancelled/version-stale jobs must return without provider invocation. This must happen before a browser is launched.
+
+- [ ] **Step 2: write RED success persistence test with `nextCursor`**
+
+Fake browser provider returns two listings and `nextCursor: null`; assert task COMPLETED, attempts/counters, candidates, sources and usage.
+
+- [ ] **Step 3: write RED blocked-provider failure test**
+
+`DiscoveryAccessBlockedError` marks only SearchTask FAILED, increments `errorCount` and `rateLimitCount` when `rateLimited=true`, leaves campaign DISCOVERING, and leaves unrelated task untouched.
+
+- [ ] **Step 4: adapt processor from `nextPageToken/getNextPage` to `continuationCursor/continueSearch`**
+
+- [ ] **Step 5: compose browser provider in worker startup**
+
+Create one provider instance/registry from browser config. Register `campaign-discovery` unconditionally. Do not require a Google credential.
+
+Browser concurrency is bounded to configured default `1`; no unbounded parallel browser launch.
+
+- [ ] **Step 6: run full CI GREEN**
+
+- [ ] **Step 7: commit**
+
+Commit: `feat: run browser business discovery jobs`.
+
+---
+
+### Task 6: Verify crash-safe cursor continuation and pause/resume end-to-end
+
+**Files:**
+- Modify: `apps/worker/src/business-discovery.processor.ts`
+- Modify: `apps/worker/test/business-discovery.integration.test.ts`
+- Modify: `apps/api/test/campaigns.service.test.ts`
+
+- [ ] **Step 1: write RED next-cursor scheduling test**
+
+Provider page 1 returns `nextCursor = cursor-2`; assert SearchTask becomes PENDING, pageNumber 2, cursor persisted, and deterministic page-2 queue job scheduled.
+
+- [ ] **Step 2: write RED committed-page enqueue-failure repair test**
+
+Make page-2 enqueue fail after page-1 DB commit. Replay old page-1 queue payload and assert provider call count does not increase; processor only reschedules persisted page 2.
+
+- [ ] **Step 3: write RED pause/resume generation sequence**
+
+Old queued generation after PAUSE must not launch provider. Resume produces fresh planner generation, planner returns campaign to DISCOVERING, and fresh discovery generation invokes provider successfully.
+
+- [ ] **Step 4: implement only missing repair/lifecycle behavior**
+
+Do not add a new orchestration subsystem.
+
+- [ ] **Step 5: run full CI GREEN**
+
+- [ ] **Step 6: commit**
+
+Commit: `test: verify resilient browser discovery lifecycle`.
+
+---
+
+### Task 7: Browser smoke, docs, security review, PR, merge
+
+**Files:**
+- Create: `packages/discovery/test/google-maps-browser.live.test.ts`
+- Modify: `README.md`
+- Create/Modify: `docs/milestones/STATUS.md`
+- Review: full M3-main -> M4 diff.
+
+- [ ] **Step 1: add opt-in live browser smoke**
 
 Guard:
 
 ```ts
-const live = process.env.GOOGLE_PLACES_API_KEY && process.env.RUN_LIVE_DISCOVERY_TESTS === '1'
-  ? describe
-  : describe.skip;
+const live = process.env.RUN_LIVE_BROWSER_DISCOVERY_TESTS === '1' ? describe : describe.skip;
 ```
 
-Perform one first-page Text Search such as `Dentist` in `Austin, Texas, United States`, normalize the first result, and assert non-empty provider ID/name. Never run this test in normal CI without explicit opt-in.
+Run one narrow public browser query. If source presents CAPTCHA/login/blocking, the test reports blocked and stops; it must never automate bypass.
 
-- [ ] **Step 2: update README and status ledger**
+- [ ] **Step 2: document runtime**
 
-README documents:
+README must explain Playwright/Chromium install, browser config, AI fallback, source/access limitations, diagnostics, continuation/retry behavior, and M5 boundary. Remove all Google Places API/key documentation.
 
-- M4 discovery architecture.
-- Google provider configuration.
-- standard vs live test behavior.
-- candidate/source/usage persistence.
-- pagination recovery.
-- pause/resume generation invalidation.
-- M5 boundary.
+- [ ] **Step 3: update milestone ledger**
 
-`docs/milestones/STATUS.md` records M0–M3 complete, M4 candidate/complete state, and M5–M24 remaining in exact roadmap order.
+Record M0-M3 complete, M4 as the current candidate, M5-M24 remaining in roadmap order.
 
-- [ ] **Step 3: run exact-head full CI**
+- [ ] **Step 4: exact-head full verification**
 
-Require success for:
+Require:
 
 ```text
-Install dependencies (frozen lockfile)
-Validate Prisma schema
-Apply database migrations
-Run tests
-Typecheck
-Lint
-Build
-Smoke test compiled applications
+frozen install
+Playwright Chromium install
+Prisma validation
+all migrations
+unit tests
+real Chromium local-fixture integration
+worker/database pg-boss integration
+typecheck
+lint
+build
+compiled smoke-start
 ```
 
-- [ ] **Step 4: perform final review against the spec/master roadmap**
+- [ ] **Step 5: final code/security review**
 
-Verify:
+Reject the candidate if any of these remain:
 
-- no M5 canonical/fuzzy deduplication.
-- no crawling/enrichment/AI/result UI.
-- no Google code outside discovery package/composition.
-- no paid request in default CI.
-- secrets remain server-side.
-- provider token never becomes queue source of truth.
-- exact candidate/source uniqueness exists in DB.
-- replay cannot double-apply committed page counters.
-- pause/resume/cancel prevent stale provider I/O.
-- provider failure leaves campaign/other tasks intact.
-- no forbidden queue infrastructure.
+- `GOOGLE_PLACES_API_KEY` or Places API URL/field mask/SDK usage.
+- hidden Maps network/data endpoint extraction.
+- CAPTCHA/access-control bypass logic.
+- stealth/fingerprint/proxy-rotation/evasion code.
+- browser cursor only in memory/queue.
+- stale jobs can launch browser/AI.
+- unbounded browser concurrency.
+- provider-specific campaign/domain orchestration.
+- M5+ scope creep.
+- forbidden queue infrastructure.
 
-Fix all Critical/Important findings and rerun exact-head CI after any fix.
+Fix Critical/Important findings and rerun exact-head verification.
 
-- [ ] **Step 5: open PR**
+- [ ] **Step 6: open PR**
 
-Title:
-
-```text
-Milestone 4: Business discovery
-```
+Title: `Milestone 4: Browser business discovery`
 
 Require PR CI on the exact reviewed head.
 
-- [ ] **Step 6: squash-merge with `expected_head_sha` guard**
+- [ ] **Step 7: squash merge with expected-head SHA guard**
 
-- [ ] **Step 7: verify post-merge `main` CI**
+- [ ] **Step 8: verify post-merge `main` CI**
 
-Do not mark M4 complete or start M5 until the workflow triggered by the M4 merge commit passes every required gate.
+Do not mark M4 complete or start M5 until the merge-triggered `main` workflow passes every required gate.
