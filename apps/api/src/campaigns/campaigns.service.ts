@@ -133,7 +133,7 @@ export class CampaignsService {
   private async rollbackPlanningTransition(
     campaignId: string,
     workspaceId: string,
-    previousStatus: CampaignStatus.DRAFT | CampaignStatus.PAUSED,
+    previousStatus: 'DRAFT' | 'PAUSED',
   ): Promise<void> {
     await this.db.campaign.updateMany({
       where: {
