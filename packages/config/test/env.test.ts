@@ -9,24 +9,18 @@ const requiredEnv = {
 };
 
 describe('loadServerEnv', () => {
-  it('accepts required environment and leaves optional provider secrets undefined', () => {
+  it('accepts required environment and keeps AI credentials optional', () => {
     const env = loadServerEnv(requiredEnv);
 
     expect(env.NODE_ENV).toBe('test');
     expect(env.OPENAI_API_KEY).toBeUndefined();
-    expect(env.GOOGLE_PLACES_API_KEY).toBeUndefined();
+    expect(env).not.toHaveProperty('GOOGLE_PLACES_API_KEY');
   });
 
-  it('normalizes a blank Google Places key to undefined', () => {
-    const env = loadServerEnv({ ...requiredEnv, GOOGLE_PLACES_API_KEY: '' });
+  it('ignores obsolete Google Places credentials because browser discovery does not use them', () => {
+    const env = loadServerEnv({ ...requiredEnv, GOOGLE_PLACES_API_KEY: 'obsolete-key' });
 
-    expect(env.GOOGLE_PLACES_API_KEY).toBeUndefined();
-  });
-
-  it('accepts a configured Google Places key without exposing it to browser config', () => {
-    const env = loadServerEnv({ ...requiredEnv, GOOGLE_PLACES_API_KEY: 'server-only-key' });
-
-    expect(env.GOOGLE_PLACES_API_KEY).toBe('server-only-key');
+    expect(env).not.toHaveProperty('GOOGLE_PLACES_API_KEY');
   });
 
   it('fails fast when required configuration is missing', () => {
