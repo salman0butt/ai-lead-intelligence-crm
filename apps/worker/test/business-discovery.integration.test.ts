@@ -11,31 +11,31 @@ import { processBusinessDiscoveryJob } from '../src/business-discovery.processor
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? describe.sequential : describe.skip;
 
-type RawPlace = {
+type RawListing = {
   id: string;
   name: string;
   address: string;
 };
 
-function createProvider(results: RawPlace[], error?: Error) {
+function createProvider(results: RawListing[], error?: Error) {
   return {
-    name: 'google-places',
+    name: 'google-maps-browser',
     searchBusinesses: vi.fn(async () => {
       if (error) throw error;
-      return { results, nextPageToken: null };
+      return { results, nextCursor: null };
     }),
-    getNextPage: vi.fn(async () => {
+    continueSearch: vi.fn(async () => {
       if (error) throw error;
-      return { results, nextPageToken: null };
+      return { results, nextCursor: null };
     }),
-    normalizeResult: vi.fn((raw: RawPlace) => ({
+    normalizeResult: vi.fn((raw: RawListing) => ({
       providerExternalId: raw.id,
       name: raw.name,
       formattedAddress: raw.address,
       category: 'dentist',
       latitude: 30.1,
       longitude: -97.7,
-      rawReference: `google-place:${raw.id}`,
+      rawReference: `https://www.google.com/maps/place/${raw.id}`,
     })),
   };
 }
@@ -49,7 +49,7 @@ function createRegistry(provider: ReturnType<typeof createProvider>) {
 function createQueue() {
   return {
     enqueue: vi.fn(async () => {
-      throw new Error('pagination is not expected in first-page completion tests');
+      throw new Error('continuation is not expected in first-page completion tests');
     }),
   };
 }
@@ -99,7 +99,7 @@ async function createFixture(
       region: 'Texas',
       city: 'Austin',
       query: options.query ?? 'Dentist',
-      provider: 'google-places',
+      provider: 'google-maps-browser',
       status: options.taskStatus ?? SearchTaskStatus.PENDING,
     },
   });
@@ -134,14 +134,14 @@ integration('business discovery processor', () => {
     await database.$disconnect();
   });
 
-  it('normalizes one page, persists exact candidates/provenance, and aggregates provider usage', async () => {
+  it('normalizes one page, persists exact candidates/provenance, and aggregates source usage', async () => {
     const first = await createFixture(database);
     workspaceIds.push(first.workspace.id);
     userIds.push(first.user.id);
 
     const provider = createProvider([
-      { id: 'place-1', name: 'Example Dental', address: '123 Main St, Austin, TX' },
-      { id: 'place-2', name: 'Second Dental', address: '456 Main St, Austin, TX' },
+      { id: 'maps-url-sha256:place-1', name: 'Example Dental', address: '123 Main St, Austin, TX' },
+      { id: 'maps-url-sha256:place-2', name: 'Second Dental', address: '456 Main St, Austin, TX' },
     ]);
     const registry = createRegistry(provider);
     const queue = createQueue();
@@ -170,7 +170,7 @@ integration('business discovery processor', () => {
       resultCount: 2,
       uniqueBusinessCount: 2,
       pageNumber: 1,
-      nextPageToken: null,
+      continuationCursor: null,
     });
     await expect(
       database.businessCandidate.count({ where: { campaignId: first.campaign.id } }),
@@ -183,7 +183,7 @@ integration('business discovery processor', () => {
         where: {
           campaignId_provider: {
             campaignId: first.campaign.id,
-            provider: 'google-places',
+            provider: 'google-maps-browser',
           },
         },
       }),
@@ -204,7 +204,7 @@ integration('business discovery processor', () => {
         region: 'Texas',
         city: 'Austin',
         query: 'Dental clinic',
-        provider: 'google-places',
+        provider: 'google-maps-browser',
       },
     });
     const secondJobId = randomUUID();
@@ -217,8 +217,8 @@ integration('business discovery processor', () => {
       },
     });
     const secondProvider = createProvider([
-      { id: 'place-1', name: 'Example Dental', address: '123 Main St, Austin, TX' },
-      { id: 'place-3', name: 'Third Dental', address: '789 Main St, Austin, TX' },
+      { id: 'maps-url-sha256:place-1', name: 'Example Dental', address: '123 Main St, Austin, TX' },
+      { id: 'maps-url-sha256:place-3', name: 'Third Dental', address: '789 Main St, Austin, TX' },
     ]);
 
     const currentCampaign = await database.campaign.findUniqueOrThrow({
@@ -367,7 +367,7 @@ integration('business discovery processor', () => {
         where: {
           campaignId_provider: {
             campaignId: fixture.campaign.id,
-            provider: 'google-places',
+            provider: 'google-maps-browser',
           },
         },
       }),
