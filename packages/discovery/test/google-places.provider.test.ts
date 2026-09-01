@@ -13,6 +13,8 @@ const searchInput: BusinessSearchInput = {
   geographicCell: '',
 };
 
+type FetchArgs = [input: RequestInfo | URL, init?: RequestInit];
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -20,9 +22,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function createFetchMock(responseFactory: () => Response) {
+  return vi.fn(async (...args: FetchArgs) => {
+    void args;
+    return responseFactory();
+  });
+}
+
 describe('GooglePlacesDiscoveryProvider', () => {
   it('sends a first-page Places Text Search with the narrow production field mask', async () => {
-    const fetcher = vi.fn(async () =>
+    const fetcher = createFetchMock(() =>
       jsonResponse({
         places: [
           {
@@ -59,7 +68,7 @@ describe('GooglePlacesDiscoveryProvider', () => {
   });
 
   it('uses the persisted provider token while preserving search parameters for the next page', async () => {
-    const fetcher = vi.fn(async () => jsonResponse({ places: [] }));
+    const fetcher = createFetchMock(() => jsonResponse({ places: [] }));
     const provider = new GooglePlacesDiscoveryProvider('test-key', fetcher as typeof fetch);
 
     await provider.getNextPage(searchInput, 'token-2');
@@ -73,7 +82,8 @@ describe('GooglePlacesDiscoveryProvider', () => {
   });
 
   it('normalizes provider-specific place data into the discovery contract', () => {
-    const provider = new GooglePlacesDiscoveryProvider('test-key', vi.fn() as unknown as typeof fetch);
+    const fetcher = createFetchMock(() => jsonResponse({}));
+    const provider = new GooglePlacesDiscoveryProvider('test-key', fetcher as typeof fetch);
 
     expect(
       provider.normalizeResult({
@@ -95,7 +105,7 @@ describe('GooglePlacesDiscoveryProvider', () => {
   });
 
   it('treats a missing places array as an empty successful page', async () => {
-    const fetcher = vi.fn(async () => jsonResponse({ nextPageToken: null }));
+    const fetcher = createFetchMock(() => jsonResponse({ nextPageToken: null }));
     const provider = new GooglePlacesDiscoveryProvider('test-key', fetcher as typeof fetch);
 
     await expect(provider.searchBusinesses(searchInput)).resolves.toEqual({
@@ -105,7 +115,7 @@ describe('GooglePlacesDiscoveryProvider', () => {
   });
 
   it('surfaces HTTP failures as typed provider errors and identifies rate limits', async () => {
-    const fetcher = vi.fn(async () => jsonResponse({ error: { message: 'quota exceeded' } }, 429));
+    const fetcher = createFetchMock(() => jsonResponse({ error: { message: 'quota exceeded' } }, 429));
     const provider = new GooglePlacesDiscoveryProvider('test-key', fetcher as typeof fetch);
 
     try {
