@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PgBossQueueService } from '../../../packages/queue/src/pg-boss-queue.service.js';
 
 function metadata(jobId = '00000000-0000-4000-8000-000000000001') {
@@ -7,6 +7,7 @@ function metadata(jobId = '00000000-0000-4000-8000-000000000001') {
     queue: 'system-test',
     status: 'QUEUED' as const,
     workspaceId: '00000000-0000-4000-8000-000000000002',
+    idempotencyKey: null,
     attempts: 0,
     createdAt: new Date('2026-09-01T00:00:00Z'),
     startedAt: null,
@@ -15,22 +16,30 @@ function metadata(jobId = '00000000-0000-4000-8000-000000000001') {
   };
 }
 
-function createDatabase(existing = metadata()) {
+function createDatabase(existing = metadata(), duplicateReservation = false) {
   const creates: unknown[] = [];
   const updates: unknown[] = [];
+  const deletes: unknown[] = [];
   return {
     creates,
     updates,
+    deletes,
     client: {
       jobMetadata: {
         create: async ({ data }: { data: Record<string, unknown> }) => {
+          if (duplicateReservation) throw new Error('unique violation');
           creates.push(data);
           return { ...existing, ...data };
         },
+        findFirst: async () => existing,
         findUnique: async () => existing,
         update: async ({ data }: { data: unknown }) => {
           updates.push(data);
           return { ...existing, ...(data as object) };
+        },
+        delete: async ({ where }: { where: unknown }) => {
+          deletes.push(where);
+          return existing;
         },
       },
     },
@@ -42,16 +51,14 @@ function createBoss() {
   const sends: Array<{ name: string; data: unknown; options: Record<string, unknown> }> = [];
   const cancellations: Array<{ name: string; id: string }> = [];
   const retries: Array<{ name: string; id: string }> = [];
-  let duplicate = false;
+  const workers: Array<{ name: string; options: Record<string, unknown> }> = [];
 
   return {
     queues,
     sends,
     cancellations,
     retries,
-    setDuplicate(value: boolean) {
-      duplicate = value;
-    },
+    workers,
     client: {
       on: () => undefined,
       start: async () => undefined,
@@ -61,7 +68,7 @@ function createBoss() {
       },
       send: async (name: string, data: unknown, options: Record<string, unknown>) => {
         sends.push({ name, data, options });
-        return duplicate ? null : String(options.id);
+        return String(options.id);
       },
       findJobs: async () => [{ id: '00000000-0000-4000-8000-000000000001' }],
       cancel: async (name: string, id: string) => {
@@ -69,6 +76,23 @@ function createBoss() {
       },
       retry: async (name: string, id: string) => {
         retries.push({ name, id });
+      },
+      work: async (
+        name: string,
+        options: Record<string, unknown>,
+        handler: (jobs: Array<{ id: string; data: Record<string, string> }>) => Promise<void>,
+      ) => {
+        workers.push({ name, options });
+        await handler([
+          {
+            id: '00000000-0000-4000-8000-000000000001',
+            data: {
+              jobId: '00000000-0000-4000-8000-000000000001',
+              workspaceId: '00000000-0000-4000-8000-000000000002',
+            },
+          },
+        ]);
+        return 'worker-1';
       },
     },
   };
@@ -86,6 +110,7 @@ describe('PgBossQueueService', () => {
     expect(boss.queues[1]).toMatchObject({
       name: 'system-test',
       options: {
+        notify: true,
         retryLimit: 3,
         retryDelay: 5,
         retryBackoff: true,
@@ -97,7 +122,7 @@ describe('PgBossQueueService', () => {
     });
   });
 
-  it('enqueues identifier-only payloads with priority and singleton idempotency', async () => {
+  it('reserves metadata before enqueueing identifier-only payloads', async () => {
     const db = createDatabase();
     const boss = createBoss();
     const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
@@ -109,12 +134,11 @@ describe('PgBossQueueService', () => {
     );
 
     expect(result.jobId).toBeTruthy();
+    expect(db.creates).toHaveLength(1);
     expect(boss.sends).toHaveLength(1);
     expect(boss.sends[0]).toMatchObject({
       name: 'system-test',
-      data: {
-        workspaceId: '00000000-0000-4000-8000-000000000002',
-      },
+      data: { workspaceId: '00000000-0000-4000-8000-000000000002' },
       options: {
         singletonKey: 'test:workspace:1',
         priority: 7,
@@ -124,32 +148,12 @@ describe('PgBossQueueService', () => {
       },
     });
     expect((boss.sends[0]?.data as { jobId?: string }).jobId).toBe(result.jobId);
-    expect(db.creates).toHaveLength(1);
   });
 
-  it('suffixes a shared bulk idempotency key per item', async () => {
-    const db = createDatabase();
-    const boss = createBoss();
-    const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
-
-    const results = await queue.enqueueBulk(
-      'system-test',
-      [
-        { workspaceId: '00000000-0000-4000-8000-000000000002' },
-        { workspaceId: '00000000-0000-4000-8000-000000000003' },
-      ],
-      { idempotencyKey: 'batch' },
-    );
-
-    expect(results).toHaveLength(2);
-    expect(boss.sends.map((send) => send.options.singletonKey)).toEqual(['batch:0', 'batch:1']);
-  });
-
-  it('returns existing metadata when a singleton duplicate is rejected by pg-boss', async () => {
+  it('returns the existing metadata when the database idempotency reservation conflicts', async () => {
     const existing = metadata();
-    const db = createDatabase(existing);
+    const db = createDatabase(existing, true);
     const boss = createBoss();
-    boss.setDuplicate(true);
     const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
 
     const result = await queue.enqueue(
@@ -159,7 +163,7 @@ describe('PgBossQueueService', () => {
     );
 
     expect(result.jobId).toBe(existing.jobId);
-    expect(db.creates).toHaveLength(0);
+    expect(boss.sends).toHaveLength(0);
   });
 
   it('supports scheduled jobs, cancellation, retry, and status lookup', async () => {
@@ -179,5 +183,28 @@ describe('PgBossQueueService', () => {
     expect(boss.retries).toEqual([{ name: 'system-test', id: existing.jobId }]);
 
     await expect(queue.getStatus('system-test', existing.jobId)).resolves.toMatchObject({ jobId: existing.jobId });
+  });
+
+  it('suffixes bulk idempotency keys and registers one-job workers', async () => {
+    const db = createDatabase();
+    const boss = createBoss();
+    const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
+
+    await queue.enqueueBulk(
+      'system-test',
+      [{ workspaceId: metadata().workspaceId }, { workspaceId: metadata().workspaceId }],
+      { idempotencyKey: 'bulk' },
+    );
+
+    expect(boss.sends[0]?.options.singletonKey).toBe('bulk:0');
+    expect(boss.sends[1]?.options.singletonKey).toBe('bulk:1');
+
+    const handler = vi.fn(async () => undefined);
+    await queue.work('system-test', handler);
+    expect(boss.workers[0]).toMatchObject({
+      name: 'system-test',
+      options: { batchSize: 1, newJobCheckIntervalSeconds: 1 },
+    });
+    expect(handler).toHaveBeenCalledOnce();
   });
 });
