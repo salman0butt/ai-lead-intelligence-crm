@@ -6,15 +6,15 @@ import {
 } from '../src/index.js';
 
 const provider: BusinessDiscoveryProvider = {
-  name: 'google-places',
+  name: 'google-maps-browser',
   async searchBusinesses(input: BusinessSearchInput) {
     void input;
-    return { results: [], nextPageToken: null };
+    return { results: [], nextCursor: null };
   },
-  async getNextPage(input: BusinessSearchInput, pageToken: string) {
+  async continueSearch(input: BusinessSearchInput, cursor: string) {
     void input;
-    void pageToken;
-    return { results: [], nextPageToken: null };
+    void cursor;
+    return { results: [], nextCursor: null };
   },
   normalizeResult() {
     throw new Error('not used');
@@ -22,18 +22,18 @@ const provider: BusinessDiscoveryProvider = {
 };
 
 describe('DiscoveryProviderRegistry', () => {
-  it('resolves a registered provider by stable provider name', () => {
+  it('resolves the browser provider by stable provider name', () => {
     const registry = new DiscoveryProviderRegistry();
     registry.register(provider);
 
-    expect(registry.get('google-places')).toBe(provider);
+    expect(registry.get('google-maps-browser')).toBe(provider);
   });
 
-  it('fails clearly when a SearchTask references an unconfigured provider', () => {
+  it('fails clearly when a SearchTask references an unconfigured browser provider', () => {
     const registry = new DiscoveryProviderRegistry();
 
-    expect(() => registry.get('google-places')).toThrow(
-      'Discovery provider "google-places" is not configured',
+    expect(() => registry.get('google-maps-browser')).toThrow(
+      'Discovery provider "google-maps-browser" is not configured',
     );
   });
 });
