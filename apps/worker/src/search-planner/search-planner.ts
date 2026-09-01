@@ -19,20 +19,14 @@ interface PlannedSearchTask extends GeographicTarget {
   provider: string;
 }
 
-const DEFAULT_PROVIDER = 'google-places';
+export const DEFAULT_DISCOVERY_PROVIDER = 'google-maps-browser';
 
 function dedupeTasks(tasks: PlannedSearchTask[]): PlannedSearchTask[] {
   const seen = new Set<string>();
   const unique: PlannedSearchTask[] = [];
 
   for (const task of tasks) {
-    const key = [
-      task.provider,
-      task.country,
-      task.region,
-      task.city,
-      task.query,
-    ].join('\u0000');
+    const key = [task.provider, task.country, task.region, task.city, task.query].join('\u0000');
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(task);
@@ -83,7 +77,7 @@ export async function planCampaignSearch(
       geography.map((target) => ({
         ...target,
         query,
-        provider: DEFAULT_PROVIDER,
+        provider: DEFAULT_DISCOVERY_PROVIDER,
       })),
     ),
   );
