@@ -127,6 +127,24 @@ describe('PgBossQueueService', () => {
     expect(db.creates).toHaveLength(1);
   });
 
+  it('suffixes a shared bulk idempotency key per item', async () => {
+    const db = createDatabase();
+    const boss = createBoss();
+    const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
+
+    const results = await queue.enqueueBulk(
+      'system-test',
+      [
+        { workspaceId: '00000000-0000-4000-8000-000000000002' },
+        { workspaceId: '00000000-0000-4000-8000-000000000003' },
+      ],
+      { idempotencyKey: 'batch' },
+    );
+
+    expect(results).toHaveLength(2);
+    expect(boss.sends.map((send) => send.options.singletonKey)).toEqual(['batch:0', 'batch:1']);
+  });
+
   it('returns existing metadata when a singleton duplicate is rejected by pg-boss', async () => {
     const existing = metadata();
     const db = createDatabase(existing);
