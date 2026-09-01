@@ -39,6 +39,8 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: pnpm --filter @ai-crm/discovery exec playwright install --with-deps chromium
       - name: Validate Prisma schema
         run: pnpm db:validate
       - name: Apply database migrations
