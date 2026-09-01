@@ -219,7 +219,11 @@ describe('PgBossQueueService', () => {
     await queue.work('system-test', handler);
     expect(boss.workers[0]).toMatchObject({
       name: 'system-test',
-      options: { localConcurrency: 1, pollingIntervalSeconds: 1 },
+      options: {
+        localConcurrency: 1,
+        pollingIntervalSeconds: 1,
+        notifyPollingIntervalSeconds: 1,
+      },
     });
     expect(handler).toHaveBeenCalledOnce();
   });
