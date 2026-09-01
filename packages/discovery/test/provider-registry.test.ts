@@ -7,10 +7,13 @@ import {
 
 const provider: BusinessDiscoveryProvider = {
   name: 'google-places',
-  async searchBusinesses(_input: BusinessSearchInput) {
+  async searchBusinesses(input: BusinessSearchInput) {
+    void input;
     return { results: [], nextPageToken: null };
   },
-  async getNextPage(_input: BusinessSearchInput, _pageToken: string) {
+  async getNextPage(input: BusinessSearchInput, pageToken: string) {
+    void input;
+    void pageToken;
     return { results: [], nextPageToken: null };
   },
   normalizeResult() {
