@@ -32,7 +32,7 @@ interface BossAdapter {
   work(
     name: string,
     options: Record<string, unknown>,
-    handler: (job: BossJobReference) => Promise<void>,
+    handler: (jobs: BossJobReference[]) => Promise<void>,
   ): Promise<string>;
 }
 
@@ -76,13 +76,14 @@ export class PgBossQueueService implements QueueService {
     return this.boss.work(
       queue,
       {
-        teamSize: definition.concurrency,
-        teamConcurrency: definition.concurrency,
-        newJobCheckIntervalSeconds: 1,
+        localConcurrency: definition.concurrency,
+        pollingIntervalSeconds: 1,
       },
-      async (job) => {
-        if (!job.data) return;
-        await handler({ id: job.id, data: job.data as QueuePayload });
+      async (jobs) => {
+        for (const job of jobs) {
+          if (!job.data) continue;
+          await handler({ id: job.id, data: job.data as QueuePayload });
+        }
       },
     );
   }
@@ -172,12 +173,15 @@ export class PgBossQueueService implements QueueService {
     if (metadata.jobId !== jobId) return this.toResult(metadata);
 
     const data = { ...payload, jobId };
+    const retryBackoff = options?.retryBackoff ?? definition.retryBackoff;
     const sendOptions: Record<string, unknown> = {
       id: jobId,
       retryLimit: options?.retryLimit ?? definition.retryLimit,
       retryDelay: options?.retryDelay ?? definition.retryDelay,
-      retryBackoff: options?.retryBackoff ?? definition.retryBackoff,
-      retryDelayMax: options?.retryDelayMax ?? definition.retryDelayMax,
+      retryBackoff,
+      ...(retryBackoff
+        ? { retryDelayMax: options?.retryDelayMax ?? definition.retryDelayMax }
+        : {}),
       expireInSeconds: options?.expireInSeconds ?? definition.expireInSeconds,
       ...(options?.priority !== undefined ? { priority: options.priority } : {}),
       ...(options?.idempotencyKey ? { singletonKey: options.idempotencyKey } : {}),
