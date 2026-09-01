@@ -78,6 +78,7 @@ export class PgBossQueueService implements QueueService {
       {
         localConcurrency: definition.concurrency,
         pollingIntervalSeconds: 1,
+        notifyPollingIntervalSeconds: 1,
       },
       async (jobs) => {
         for (const job of jobs) {
