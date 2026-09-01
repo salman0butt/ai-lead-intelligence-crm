@@ -1,17 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import { CampaignStatus, createPrismaClient, type DatabaseClient } from '@ai-crm/database';
+import { CampaignStatus, createPrismaClient } from '@ai-crm/database';
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? describe.sequential : describe.skip;
 
 integration('business discovery persistence', () => {
-  let database: DatabaseClient;
+  const database = createPrismaClient(databaseUrl!);
   const campaignIds: string[] = [];
   const userIds: string[] = [];
   const workspaceIds: string[] = [];
-
-  database = createPrismaClient(databaseUrl!);
 
   afterEach(async () => {
     if (campaignIds.length) {
