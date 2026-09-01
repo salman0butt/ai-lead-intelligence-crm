@@ -4,7 +4,12 @@
   "packageManager": "pnpm@11.24.0",
   "engines": { "node": ">=24" },
   "scripts": {
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
     "db:generate": "pnpm --filter @ai-crm/database prisma:generate",
+    "db:validate": "pnpm --filter @ai-crm/database prisma:validate",
+    "db:migrate": "pnpm --filter @ai-crm/database prisma:migrate:dev",
+    "db:deploy": "pnpm --filter @ai-crm/database prisma:migrate:deploy",
     "build:packages": "pnpm --filter @ai-crm/config build && pnpm --filter @ai-crm/schemas build && pnpm --filter @ai-crm/shared build && pnpm --filter @ai-crm/database build",
     "pretest": "pnpm run db:generate && pnpm run build:packages",
     "test": "pnpm -r --if-present test",
@@ -13,9 +18,11 @@
     "lint": "eslint . --max-warnings=0",
     "prebuild": "pnpm run db:generate",
     "build": "pnpm -r --if-present build",
-    "db:validate": "pnpm --filter @ai-crm/database prisma:validate",
-    "db:migrate": "pnpm --filter @ai-crm/database prisma:migrate:dev",
-    "db:deploy": "pnpm --filter @ai-crm/database prisma:migrate:deploy"
+    "verify": "pnpm test && pnpm typecheck && pnpm lint && pnpm build",
+    "dev:web": "pnpm --filter @ai-crm/web dev",
+    "start:web": "pnpm --filter @ai-crm/web start",
+    "start:api": "pnpm --filter @ai-crm/api start",
+    "start:worker": "pnpm --filter @ai-crm/worker start"
   },
   "devDependencies": {
     "eslint": "^10.9.1",
