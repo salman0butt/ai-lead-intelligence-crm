@@ -153,7 +153,7 @@ model SearchTask {
   attemptCount        Int              @default(0)
   resultCount         Int              @default(0)
   uniqueBusinessCount Int              @default(0)
-  nextPageToken       String?
+  continuationCursor  String?          @db.Text
   pageNumber          Int              @default(1)
   searchPlan          SearchPlan       @relation(fields: [searchPlanId], references: [id], onDelete: Cascade)
   businessSources     BusinessSource[]
