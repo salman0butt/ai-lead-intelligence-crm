@@ -31,20 +31,25 @@ function createQueue() {
   return {
     enqueue: vi.fn(
       async (
-        _queue: string,
-        _payload: { workspaceId: string },
-        _options?: { idempotencyKey?: string },
-      ) => ({
-        jobId,
-        queue: 'system-test' as const,
-        status: 'QUEUED' as const,
-        workspaceId,
-        attempts: 0,
-        createdAt: new Date('2026-09-01T00:00:00Z'),
-        startedAt: null,
-        finishedAt: null,
-        failureReason: null,
-      }),
+        ...args: [
+          queue: string,
+          payload: { workspaceId: string },
+          options?: { idempotencyKey?: string },
+        ]
+      ) => {
+        void args;
+        return {
+          jobId,
+          queue: 'system-test' as const,
+          status: 'QUEUED' as const,
+          workspaceId,
+          attempts: 0,
+          createdAt: new Date('2026-09-01T00:00:00Z'),
+          startedAt: null,
+          finishedAt: null,
+          failureReason: null,
+        };
+      },
     ),
   };
 }
