@@ -8,4 +8,6 @@ export type {
   QueuePayload,
   QueuePayloadInput,
   QueueService,
+  QueueWorkHandler,
+  QueueWorkJob,
 } from './types.js';
