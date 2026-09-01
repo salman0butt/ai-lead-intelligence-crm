@@ -66,17 +66,19 @@ model Session {
 }
 
 model JobMetadata {
-  jobId         String    @id @db.Uuid
-  queue         String    @db.VarChar(80)
-  status        JobStatus @default(QUEUED)
-  workspaceId   String    @db.Uuid
-  attempts      Int       @default(0)
-  createdAt     DateTime  @default(now())
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  failureReason String?
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  jobId          String    @id @db.Uuid
+  queue          String    @db.VarChar(80)
+  status         JobStatus @default(QUEUED)
+  workspaceId    String    @db.Uuid
+  idempotencyKey String?   @db.VarChar(200)
+  attempts       Int       @default(0)
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  failureReason  String?
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
+  @@unique([queue, workspaceId, idempotencyKey])
   @@index([workspaceId, status])
   @@index([queue, status])
 }
