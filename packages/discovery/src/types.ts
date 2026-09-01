@@ -9,7 +9,7 @@ export interface BusinessSearchInput {
 
 export interface BusinessDiscoveryPage<TRaw> {
   results: readonly TRaw[];
-  nextPageToken: string | null;
+  nextCursor: string | null;
 }
 
 export interface NormalizedBusiness {
@@ -25,8 +25,9 @@ export interface NormalizedBusiness {
 export interface BusinessDiscoveryProvider<TRaw = unknown> {
   readonly name: string;
   searchBusinesses(input: BusinessSearchInput): Promise<BusinessDiscoveryPage<TRaw>>;
-  getNextPage(input: BusinessSearchInput, pageToken: string): Promise<BusinessDiscoveryPage<TRaw>>;
+  continueSearch(input: BusinessSearchInput, cursor: string): Promise<BusinessDiscoveryPage<TRaw>>;
   normalizeResult(raw: TRaw): NormalizedBusiness;
+  close?(): Promise<void>;
 }
 
 export class DiscoveryProviderError extends Error {
