@@ -2,7 +2,7 @@
 
 Autonomous AI Lead Intelligence & Sales CRM.
 
-The repository currently completes **Milestone 2 — Campaign Management** on top of the authenticated multi-tenant foundation from Milestone 0 and the PostgreSQL job system from Milestone 1. Users can persist workspace-scoped campaigns, control their lifecycle, and hand campaign planning durably to an independent worker. Google Business discovery, enrichment, crawling, AI research, outreach generation, provider integrations, SSE progress, and campaign result tables remain intentionally outside this milestone.
+The repository currently completes **Milestone 3 — Search Planner** on top of the authenticated multi-tenant foundation, durable PostgreSQL job system, and campaign-management domain from Milestones 0–2. Starting a campaign now hands durable planning work to an independent worker, which transforms campaign targeting into a persisted, resumable search space. Real business-discovery provider calls, candidate normalization/storage, enrichment, crawling, AI research, outreach generation, and autonomous campaign execution remain intentionally outside this milestone.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ The repository currently completes **Milestone 2 — Campaign Management** on to
 apps/
   web/       Next.js + React + TypeScript + Tailwind + TanStack Query
   api/       NestJS API, authentication, workspaces, campaigns, job scheduling/status
-  worker/    Independent pg-boss worker process
+  worker/    Independent pg-boss worker + deterministic search planner
 
 packages/
   database/  Prisma + PostgreSQL client and migrations
@@ -20,7 +20,7 @@ packages/
   schemas/   Shared request schemas
 ```
 
-No Redis, BullMQ, RabbitMQ, Kafka, or Temporal is used. PostgreSQL is the durable store for both application data and pg-boss jobs.
+No Redis, BullMQ, RabbitMQ, Kafka, or Temporal is used. PostgreSQL is the durable store for application state, search-planning state, and pg-boss jobs.
 
 ## Prerequisites
 
@@ -55,6 +55,7 @@ The web application is available at `http://localhost:3000` and the API at `http
 - Every registered user starts with a workspace and an `OWNER` membership.
 - Workspace-scoped API access is authorized through `WorkspaceMember` on the backend.
 - Campaign and job access cannot be gained merely by supplying another workspace ID.
+- Search planning loads a campaign by both `campaignId` and `workspaceId`, preserving the same tenant boundary inside the worker.
 
 ## Campaign management
 
@@ -75,7 +76,7 @@ createdAt
 updatedAt
 ```
 
-`requestedLeadCount` must be a positive integer and Milestone 2 does not impose an arbitrary small product cap.
+`requestedLeadCount` must be a positive integer; it is a campaign target, not an artificial cap on the number of planning tasks.
 
 Campaign status is one of:
 
@@ -111,13 +112,11 @@ POST /campaigns/<campaign-uuid>/resume
 POST /campaigns/<campaign-uuid>/cancel
 ```
 
-Starting a `DRAFT` campaign atomically moves it to `PLANNING` and schedules one idempotent `campaign-plan` job with the key `campaign-plan:<campaignId>`. The queue payload contains identifiers only: `workspaceId`, `campaignId`, and the correlated `jobId` added by the queue adapter. If publication fails before the job is accepted, the campaign is conditionally restored to `DRAFT` and the error is surfaced.
-
-Pausing and resuming only update the campaign lifecycle in Milestone 2. Resume does not create another planning job because actual discovery execution has not been implemented yet.
+Starting a `DRAFT` campaign atomically moves it to `PLANNING` and schedules one idempotent `campaign-plan` job with key `campaign-plan:<campaignId>`. The queue payload contains identifiers only: `workspaceId`, `campaignId`, and the correlated `jobId` added by the queue adapter. If publication fails before the job is accepted, the campaign is conditionally restored to `DRAFT` and the error is surfaced.
 
 ### Campaign web routes
 
-The Next.js application adds:
+The Next.js application includes:
 
 ```text
 /campaigns
@@ -125,7 +124,119 @@ The Next.js application adds:
 /campaigns/[id]
 ```
 
-These routes reuse the existing browser API client, stored bearer session, selected workspace, and TanStack Query setup. The list displays campaign targeting, requested lead count, and status. The create route captures campaign targeting fields. The detail route displays the current state and only shows lifecycle actions valid for that state.
+These routes reuse the existing browser API client, stored bearer session, selected workspace, and TanStack Query setup.
+
+## Search Planner
+
+Milestone 3 turns a campaign target into durable search-space records before any external provider is called.
+
+The flow is:
+
+```text
+Campaign start
+    ↓
+DRAFT -> PLANNING
+    ↓
+campaign-plan job
+    ↓
+independent worker
+    ↓
+deterministic Search Planner
+    ↓
+SearchPlan + SearchTask rows in PostgreSQL
+```
+
+### SearchPlan
+
+There is exactly one `SearchPlan` per campaign. The campaign ID is unique at the database level, so pg-boss retries, worker restarts, or application-level replay reuse the existing plan instead of creating another one.
+
+### SearchTask
+
+Each persisted task contains:
+
+```text
+country
+region
+city
+geographicCell
+query
+provider
+status
+attemptCount
+resultCount
+uniqueBusinessCount
+```
+
+Task execution status is one of:
+
+```text
+PENDING
+RUNNING
+COMPLETED
+FAILED
+CANCELLED
+```
+
+M3 only creates tasks as `PENDING`; the remaining states and counters are persisted now so M4 discovery work can resume safely later.
+
+The database prevents duplicate search space with a unique constraint on:
+
+```text
+searchPlanId + provider + country + region + city + query
+```
+
+`region`, `city`, and `geographicCell` are normalized to non-null strings so PostgreSQL uniqueness cannot be bypassed through `NULL` semantics.
+
+Planner replay uses `createMany(..., skipDuplicates: true)` and never updates existing task state or counters. A task already marked `COMPLETED`, including its attempt/result/unique-business counters, stays completed when planning is replayed.
+
+### Deterministic niche expansion
+
+M3 deliberately uses deterministic expansion instead of an LLM. The default `Dentist` search set is:
+
+```text
+Dentist
+Dental Clinic
+Family Dentist
+Cosmetic Dentist
+Orthodontist
+Pediatric Dentist
+Emergency Dentist
+```
+
+Known aliases such as `dentists` map to the same stable set. An unknown niche falls back to the trimmed niche itself instead of inventing variants.
+
+AI-assisted niche expansion is deferred to a later milestone where model infrastructure, evaluation, and guardrails can be added deliberately.
+
+### Geography abstraction
+
+Geography expansion lives behind `GeographyCatalog`; it is not embedded in `CampaignsService`.
+
+The current deterministic catalog follows these rules:
+
+- explicit city targeting is preserved as one target;
+- explicit region targeting is preserved as one target;
+- country-only United States targeting expands into the 50 states plus District of Columbia;
+- other country-only targeting falls back to one country-level target rather than fabricating subdivisions.
+
+For example, a 10,000-lead United States Dentist campaign produces:
+
+```text
+7 deterministic queries × 51 geographic targets = 357 SearchTask rows
+```
+
+The requested lead count remains the campaign objective. SearchTask count represents the search space, not the requested result count.
+
+### Provider identifier
+
+M3 stores:
+
+```text
+provider = google-places
+```
+
+This is only a planning identifier used to partition and deduplicate search space. Milestone 3 does **not** call Google Places, add a Google SDK, require a provider credential, paginate provider responses, or persist discovered businesses.
+
+The real `BusinessDiscoveryProvider` abstraction and provider-specific network behavior belong to Milestone 4.
 
 ## PostgreSQL job system
 
@@ -202,13 +313,13 @@ The API verifies membership in the job's workspace before returning status.
 
 ### Worker behavior
 
-`apps/worker` is a separate process with its own PostgreSQL/pg-boss lifecycle. It currently registers consumers for `system-test` and `campaign-plan`.
+`apps/worker` is a separate process with its own PostgreSQL/pg-boss lifecycle. It registers consumers for `system-test` and `campaign-plan`.
 
 Both processors run through the tracked-job execution wrapper. Each attempt records `RUNNING` and increments `attempts`; success records `COMPLETED`; failure records `FAILED` with `failureReason` and rethrows so pg-boss owns retry/backoff and eventual dead-letter behavior.
 
-The `campaign-plan` domain handler is intentionally a no-op in Milestone 2. Its purpose is to prove the durable API-to-worker handoff and tracked job lifecycle without prematurely implementing discovery.
+Unlike M2's no-op planning handoff, the M3 production `campaign-plan` processor now loads the persisted campaign and creates/reuses its `SearchPlan` and missing `SearchTask` rows. It still performs no external discovery.
 
-Stopping or restarting the API/producer does not erase queued jobs. A separately started worker can consume planning work already persisted in PostgreSQL.
+Stopping or restarting the API/producer does not erase queued jobs. A separately started worker can consume a persisted `campaign-plan` job and create search space after the producer has stopped.
 
 ## Environment variables
 
@@ -221,7 +332,7 @@ NODE_ENV
 OPENAI_API_KEY
 ```
 
-`OPENAI_API_KEY` remains optional and unused in Milestone 2.
+`OPENAI_API_KEY` remains optional and unused in Milestone 3.
 
 ## Database commands
 
@@ -245,14 +356,21 @@ CI starts PostgreSQL, installs from the frozen lockfile, validates and applies P
 Current PostgreSQL-backed coverage verifies that:
 
 - campaign targeting, ownership, a large requested-lead target, and the `DRAFT` default persist correctly;
-- a queued job survives the producer being stopped and is completed by a separately started worker;
-- a `campaign-plan` job survives producer shutdown and is consumed by an independent worker using identifier-only payload data;
+- SearchPlan/SearchTask persistence includes the resumable task defaults and counters;
+- a 10,000-lead United States Dentist campaign generates many smaller persisted search tasks;
+- planner replay inserts no duplicate tasks and preserves a completed task's status/counters;
+- workspace/campaign identifier mismatch is rejected inside planning;
+- cancelled campaigns create no search space;
+- a queued job survives producer shutdown and is completed by a separately started worker;
+- a real `campaign-plan` job survives producer shutdown and an independent worker creates persisted SearchPlan/SearchTask rows;
 - duplicate scheduling with the same workspace-scoped idempotency key produces one persisted job;
-- failed attempts are retried and attempt counts are persisted;
+- failed queue attempts are retried and attempt counts are persisted;
 - terminal failures remain visible with their failure reason after retries are exhausted.
 
-API/service tests additionally cover workspace isolation, campaign lifecycle conflicts, start idempotency, queue payload shape, and rollback when queue publication fails. Frontend tests cover campaign geography formatting and valid lifecycle-action visibility.
+Pure unit tests cover the exact Dentist expansion set, unknown-niche fallback, explicit geography preservation, the 51-target U.S. subdivision catalog, and identifier-only campaign-plan payload shape.
 
 ## Milestone boundary
 
-Milestone 2 ends with production campaign persistence, workspace-isolated campaign APIs/UI, lifecycle control, and a durable `campaign-plan` worker handoff. The later queue names already exist as infrastructure boundaries, but Google Business discovery, lead/business result models, enrichment, website crawling, AI research, outreach generation, provider integrations, SSE progress streaming, and autonomous campaign execution are **not** implemented yet.
+Milestone 3 ends with durable, deterministic, resumable search-space planning. `SearchPlan` and `SearchTask` describe **what should be searched**; they do not perform the search.
+
+Milestone 4 owns real business discovery: a `BusinessDiscoveryProvider` abstraction, provider-specific API/network calls, pagination, candidate normalization and persistence, result counters, and the `campaign-discovery` execution path. Enrichment, website crawling, AI research, outreach generation, SSE progress streaming, and higher-level autonomous orchestration remain later milestones.

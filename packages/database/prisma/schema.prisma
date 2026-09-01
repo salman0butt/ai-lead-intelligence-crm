@@ -28,6 +28,14 @@ enum CampaignStatus {
   CANCELLED
 }
 
+enum SearchTaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model User {
   id               String            @id @default(uuid()) @db.Uuid
   email            String            @unique @db.VarChar(320)
@@ -41,13 +49,14 @@ model User {
 }
 
 model Workspace {
-  id        String            @id @default(uuid()) @db.Uuid
-  name      String            @db.VarChar(120)
-  members   WorkspaceMember[]
-  jobs      JobMetadata[]
-  campaigns Campaign[]
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
+  id          String            @id @default(uuid()) @db.Uuid
+  name        String            @db.VarChar(120)
+  members     WorkspaceMember[]
+  jobs        JobMetadata[]
+  campaigns   Campaign[]
+  searchPlans SearchPlan[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 }
 
 model WorkspaceMember {
@@ -107,7 +116,42 @@ model Campaign {
   updatedAt          DateTime       @updatedAt
   workspace          Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdByUser      User           @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  searchPlan         SearchPlan?
 
   @@index([workspaceId, createdAt])
   @@index([workspaceId, status])
+}
+
+model SearchPlan {
+  id          String       @id @default(uuid()) @db.Uuid
+  workspaceId String       @db.Uuid
+  campaignId  String       @unique @db.Uuid
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  tasks       SearchTask[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([workspaceId])
+}
+
+model SearchTask {
+  id                  String           @id @default(uuid()) @db.Uuid
+  searchPlanId        String           @db.Uuid
+  country             String           @db.VarChar(120)
+  region              String           @default("") @db.VarChar(120)
+  city                String           @default("") @db.VarChar(120)
+  geographicCell      String           @default("") @db.VarChar(160)
+  query               String           @db.VarChar(200)
+  provider            String           @db.VarChar(80)
+  status              SearchTaskStatus @default(PENDING)
+  attemptCount        Int              @default(0)
+  resultCount         Int              @default(0)
+  uniqueBusinessCount Int              @default(0)
+  searchPlan          SearchPlan       @relation(fields: [searchPlanId], references: [id], onDelete: Cascade)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@unique([searchPlanId, provider, country, region, city, query])
+  @@index([searchPlanId, status])
 }
