@@ -27,13 +27,12 @@ interface BossAdapter {
     data: Record<string, string>,
     options?: Record<string, unknown>,
   ): Promise<string | null>;
-  findJobs(name: string, options?: Record<string, unknown>): Promise<BossJobReference[]>;
   cancel(name: string, id: string): Promise<unknown>;
   retry(name: string, id: string): Promise<unknown>;
   work(
     name: string,
     options: Record<string, unknown>,
-    handler: (jobs: BossJobReference[]) => Promise<void>,
+    handler: (job: BossJobReference) => Promise<void>,
   ): Promise<string>;
 }
 
@@ -73,14 +72,16 @@ export class PgBossQueueService implements QueueService {
   }
 
   async work(queue: QueueName, handler: QueueWorkHandler): Promise<string> {
+    const definition = this.definition(queue);
     return this.boss.work(
       queue,
       {
-        batchSize: 1,
+        teamSize: definition.concurrency,
+        teamConcurrency: definition.concurrency,
         newJobCheckIntervalSeconds: 1,
       },
-      async ([job]) => {
-        if (!job?.data) return;
+      async (job) => {
+        if (!job.data) return;
         await handler({ id: job.id, data: job.data as QueuePayload });
       },
     );
@@ -154,9 +155,7 @@ export class PgBossQueueService implements QueueService {
 
   async getStatus(queue: QueueName, jobId: string): Promise<QueueJobResult | null> {
     const metadata = await this.database.jobMetadata.findUnique({ where: { jobId } });
-    if (!metadata || metadata.queue !== queue) {
-      return null;
-    }
+    if (!metadata || metadata.queue !== queue) return null;
     return this.toResult(metadata);
   }
 
@@ -170,9 +169,7 @@ export class PgBossQueueService implements QueueService {
     const jobId = randomUUID();
     const metadata = await this.reserveMetadata(queue, payload.workspaceId, jobId, options?.idempotencyKey);
 
-    if (metadata.jobId !== jobId) {
-      return this.toResult(metadata);
-    }
+    if (metadata.jobId !== jobId) return this.toResult(metadata);
 
     const data = { ...payload, jobId };
     const sendOptions: Record<string, unknown> = {
@@ -189,9 +186,7 @@ export class PgBossQueueService implements QueueService {
 
     try {
       const acceptedJobId = await this.boss.send(queue, data, sendOptions);
-      if (!acceptedJobId) {
-        throw new Error(`pg-boss rejected ${queue} job ${jobId}`);
-      }
+      if (!acceptedJobId) throw new Error(`pg-boss rejected ${queue} job ${jobId}`);
       if (acceptedJobId !== jobId) {
         throw new Error(`pg-boss returned unexpected job id ${acceptedJobId} for ${jobId}`);
       }
@@ -231,9 +226,7 @@ export class PgBossQueueService implements QueueService {
 
   private definition(queue: QueueName): QueueDefinition {
     const definition = queueDefinitions.find((candidate) => candidate.name === queue);
-    if (!definition) {
-      throw new Error(`Unknown queue: ${queue}`);
-    }
+    if (!definition) throw new Error(`Unknown queue: ${queue}`);
     return definition;
   }
 
