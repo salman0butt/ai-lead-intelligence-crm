@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Dentist results</title>
+    <style>
+      #results { height: 260px; overflow-y: auto; }
+      .listing { min-height: 180px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="results" role="feed" aria-label="Results for Dentist in Austin">
+        <article class="listing" data-result-card>
+          <a aria-label="Example Dental" href="https://www.google.com/maps/place/Example+Dental/@30.1,-97.7,17z/data=!4m5!3m4!1sabc!8m2!3d30.1!4d-97.7?entry=ttu">Example Dental</a>
+          <div data-category>Dentist</div>
+          <div data-address>123 Main St, Austin, TX</div>
+        </article>
+        <article class="listing" data-result-card>
+          <a aria-label="Family Smiles" href="https://www.google.com/maps/place/Family+Smiles/@30.2,-97.8,17z/data=!4m5!3m4!1sdef!8m2!3d30.2!4d-97.8?entry=ttu">Family Smiles</a>
+          <div data-category>Dental clinic</div>
+          <div data-address>456 Congress Ave, Austin, TX</div>
+        </article>
+      </div>
+    </main>
+    <script>
+      const feed = document.getElementById('results');
+      let appended = false;
+      feed.addEventListener('scroll', () => {
+        if (appended) return;
+        appended = true;
+        const card = document.createElement('article');
+        card.className = 'listing';
+        card.dataset.resultCard = '';
+        card.innerHTML = `
+          <a aria-label="Austin Orthodontics" href="https://www.google.com/maps/place/Austin+Orthodontics/@30.3,-97.9,17z/data=!4m5!3m4!1sghi!8m2!3d30.3!4d-97.9?entry=ttu">Austin Orthodontics</a>
+          <div data-category>Orthodontist</div>
+          <div data-address>789 Lamar Blvd, Austin, TX</div>
+        `;
+        feed.appendChild(card);
+        const end = document.createElement('p');
+        end.textContent = "You've reached the end of the list.";
+        feed.appendChild(end);
+      });
+    </script>
+  </body>
+</html>
