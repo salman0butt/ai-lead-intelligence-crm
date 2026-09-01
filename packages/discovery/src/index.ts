@@ -1,3 +1,11 @@
+export { DiscoveryAccessBlockedError } from './browser/browser-errors.js';
+export { BrowserSessionFactory } from './browser/browser-session.js';
+export type { BrowserRuntimeOptions, BrowserSession } from './browser/browser-session.js';
+export {
+  buildGoogleMapsSearchUrl,
+  mapsListingExternalId,
+  normalizeMapsListingUrl,
+} from './browser/maps-url.js';
 export { DiscoveryProviderRegistry } from './provider-registry.js';
 export { DiscoveryProviderError } from './types.js';
 export type {
