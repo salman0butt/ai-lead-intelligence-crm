@@ -70,7 +70,6 @@ function createBoss() {
         sends.push({ name, data, options });
         return String(options.id);
       },
-      findJobs: async () => [{ id: '00000000-0000-4000-8000-000000000001' }],
       cancel: async (name: string, id: string) => {
         cancellations.push({ name, id });
       },
@@ -80,18 +79,16 @@ function createBoss() {
       work: async (
         name: string,
         options: Record<string, unknown>,
-        handler: (jobs: Array<{ id: string; data: Record<string, string> }>) => Promise<void>,
+        handler: (job: { id: string; data: Record<string, string> }) => Promise<void>,
       ) => {
         workers.push({ name, options });
-        await handler([
-          {
-            id: '00000000-0000-4000-8000-000000000001',
-            data: {
-              jobId: '00000000-0000-4000-8000-000000000001',
-              workspaceId: '00000000-0000-4000-8000-000000000002',
-            },
+        await handler({
+          id: '00000000-0000-4000-8000-000000000001',
+          data: {
+            jobId: '00000000-0000-4000-8000-000000000001',
+            workspaceId: '00000000-0000-4000-8000-000000000002',
           },
-        ]);
+        });
         return 'worker-1';
       },
     },
@@ -150,7 +147,7 @@ describe('PgBossQueueService', () => {
     expect((boss.sends[0]?.data as { jobId?: string }).jobId).toBe(result.jobId);
   });
 
-  it('returns the existing metadata when the database idempotency reservation conflicts', async () => {
+  it('returns existing metadata when the database idempotency reservation conflicts', async () => {
     const existing = metadata();
     const db = createDatabase(existing, true);
     const boss = createBoss();
@@ -185,7 +182,7 @@ describe('PgBossQueueService', () => {
     await expect(queue.getStatus('system-test', existing.jobId)).resolves.toMatchObject({ jobId: existing.jobId });
   });
 
-  it('suffixes bulk idempotency keys and registers one-job workers', async () => {
+  it('suffixes bulk idempotency keys and registers configured-concurrency workers', async () => {
     const db = createDatabase();
     const boss = createBoss();
     const queue = new PgBossQueueService('postgresql://unused', db.client as never, boss.client as never);
@@ -203,7 +200,7 @@ describe('PgBossQueueService', () => {
     await queue.work('system-test', handler);
     expect(boss.workers[0]).toMatchObject({
       name: 'system-test',
-      options: { batchSize: 1, newJobCheckIntervalSeconds: 1 },
+      options: { teamSize: 1, teamConcurrency: 1, newJobCheckIntervalSeconds: 1 },
     });
     expect(handler).toHaveBeenCalledOnce();
   });
