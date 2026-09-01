@@ -38,7 +38,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Validate Prisma schema
         run: pnpm db:validate
       - name: Apply database migrations
