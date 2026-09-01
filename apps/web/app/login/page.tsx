@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FormEvent, useState } from 'react';
+import { useState } from 'react';
+import type { FormEvent } from 'react';
 import type { AuthResponse } from '@ai-crm/shared';
 import { createBrowserApiClient } from '../../lib/api-client';
 import { setSelectedWorkspaceId, setSessionToken } from '../../lib/session';
