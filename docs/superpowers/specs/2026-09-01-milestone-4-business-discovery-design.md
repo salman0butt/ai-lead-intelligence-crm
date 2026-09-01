@@ -2,20 +2,24 @@
 
 ## Goal
 
-Introduce real, provider-isolated business discovery over the durable `SearchTask` search space created in Milestone 3. A campaign must be able to discover actual businesses through one real provider while provider failures, retries, pagination, pause/resume, and worker restarts remain durable.
+Introduce real, provider-isolated business discovery over the durable `SearchTask` search space created in Milestone 3, using public browser-accessible search surfaces through Playwright rather than paid business-data APIs.
+
+The first production source is Google Maps browser discovery. The design must remain source-neutral so later permitted directories, search pages, or business listing sites can be added without changing campaign orchestration.
 
 ## Source contract
 
 The master roadmap requires:
 
 - `packages/discovery`.
-- a `BusinessDiscoveryProvider` interface with `searchBusinesses()`, `getNextPage()`, and `normalizeResult()`.
-- no tight coupling of domain/workers to Google.
-- one real provider first.
+- a `BusinessDiscoveryProvider` abstraction.
+- no provider-specific code in campaign/domain orchestration.
+- one real discovery source first.
 - `BusinessCandidate`, `BusinessSource`, and `ProviderUsage` persistence.
-- a business-discovery workflow that processes `SearchTask`, calls the provider, normalizes/stores candidates, and schedules pagination.
-- provider usage tracking for provider, requests, results, errors, known cost, 429s, campaign, and workspace.
-- acceptance that a real campaign can discover actual businesses, results are normalized, provider code is isolated, and provider failures do not crash the campaign.
+- a discovery worker that processes `SearchTask`, normalizes/stores candidates, and resumes durable continuation work.
+- provider/source usage tracking.
+- provider/source failures must not crash the campaign.
+
+The user explicitly requires browser discovery rather than Google Places API usage.
 
 ## Milestone boundary
 
@@ -23,21 +27,39 @@ M4 includes discovery and candidate persistence only.
 
 M4 explicitly excludes:
 
-- canonical `Business` deduplication (M5).
+- canonical cross-source/fuzzy `Business` deduplication (M5).
 - official domain resolution and website verification (M6).
-- crawling (M7).
+- website crawling (M7).
 - contact enrichment (M8).
 - website technology/audit (M9).
-- AI/LangGraph research (M10+).
-- result/filter UI (M16).
+- lead research/report generation (M10+).
+- results/filter UI (M16).
 
-Small lifecycle changes required to make discovery resumable are in scope.
+Browser navigation/extraction intelligence used only to discover business listings is part of M4 and is not M10 lead research.
+
+## Safety and access rules
+
+Browser discovery may use only pages that are publicly accessible to the configured browser session.
+
+The implementation must not:
+
+- bypass CAPTCHA or anti-bot challenges.
+- defeat login/access controls.
+- rotate identities/proxies to evade blocking.
+- circumvent paywalls or technical restrictions.
+- call undocumented Google Maps internal data endpoints as a substitute for browser extraction.
+
+If the source presents a CAPTCHA, blocked-access page, login wall, or equivalent challenge, the browser provider stops the current attempt and returns a typed blocked/access error. Queue retry/backoff may retry later, but the code must not automate challenge solving or evasion.
+
+Deployments are responsible for enabling browser sources whose terms permit the intended automation. The source adapter remains replaceable for this reason.
 
 ## Provider architecture
 
-Create `packages/discovery` as a provider-neutral TypeScript package with no Prisma or pg-boss dependency.
+Keep `packages/discovery` as a provider-neutral TypeScript package with no Prisma or pg-boss dependency.
 
 ### Provider contract
+
+Replace API-specific page-token terminology with a generic continuation cursor:
 
 ```ts
 export interface BusinessSearchInput {
@@ -51,7 +73,7 @@ export interface BusinessSearchInput {
 
 export interface BusinessDiscoveryPage<TRaw> {
   results: readonly TRaw[];
-  nextPageToken: string | null;
+  nextCursor: string | null;
 }
 
 export interface NormalizedBusiness {
@@ -67,79 +89,179 @@ export interface NormalizedBusiness {
 export interface BusinessDiscoveryProvider<TRaw = unknown> {
   readonly name: string;
   searchBusinesses(input: BusinessSearchInput): Promise<BusinessDiscoveryPage<TRaw>>;
-  getNextPage(input: BusinessSearchInput, pageToken: string): Promise<BusinessDiscoveryPage<TRaw>>;
+  continueSearch(input: BusinessSearchInput, cursor: string): Promise<BusinessDiscoveryPage<TRaw>>;
   normalizeResult(raw: TRaw): NormalizedBusiness;
+  close?(): Promise<void>;
 }
 ```
 
-The provider package owns provider HTTP semantics and normalization only. It does not write to PostgreSQL and does not schedule jobs.
+The provider package owns source/browser semantics and normalization only. It does not write PostgreSQL rows and does not schedule pg-boss jobs.
 
 ### Provider registry
 
-Add a small `DiscoveryProviderRegistry` that maps provider name to provider instance. A missing configured provider throws a clear configuration error only when a discovery job requires it; the worker process itself must still start in CI and development without a Google key.
+`DiscoveryProviderRegistry` maps stable provider names to provider instances.
 
-## Google Places adapter
-
-Implement `GooglePlacesDiscoveryProvider` using Places API (New) Text Search:
+The new production provider name is:
 
 ```text
-POST https://places.googleapis.com/v1/places:searchText
+google-maps-browser
 ```
 
-Use native `fetch`; do not add a Google SDK.
+M4 migration converts any pre-existing M3 `SearchTask.provider = 'google-places'` rows to `google-maps-browser`, and the M3 planner default is updated so new tasks use the new name.
 
-Required headers:
+## Browser subsystem
+
+Use Playwright `1.62.1` as the pinned browser automation library. Standard CI installs Chromium explicitly with Playwright's supported browser-install command because Playwright packages do not download browser binaries during normal dependency installation.
+
+The browser subsystem is split into focused units:
 
 ```text
-Content-Type: application/json
-X-Goog-Api-Key: <server-only key>
-X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.primaryType,places.location,nextPageToken
+BrowserSessionFactory
+    -> launches Chromium/context/page with bounded timeouts
+GoogleMapsBrowserProvider
+    -> constructs search URL, drives result feed, extracts public listing cards
+MapsListingExtractor
+    -> deterministic DOM/accessibility extraction
+BrowserPageInterpreter
+    -> optional AI-guided recovery when deterministic extraction cannot understand a changed page
 ```
 
-Use `pageSize: 20` by default.
+### BrowserSessionFactory
 
-Build a deterministic text query from the M3 task:
+Responsibilities:
+
+- launch Chromium headless by default.
+- create isolated browser contexts per discovery execution/session.
+- set navigation/action timeouts.
+- expose a controlled user-agent/locale without impersonation tricks.
+- close pages/contexts/browsers on success or failure.
+- optionally capture screenshot/HTML diagnostics into a configured local diagnostics directory on provider errors.
+
+M4 does not implement stealth plugins, fingerprint spoofing, proxy rotation, or CAPTCHA solvers.
+
+### Google Maps browser navigation
+
+The provider opens the normal public browser search surface with an encoded query such as:
 
 ```text
-<query> in <city | region | country>
+https://www.google.com/maps/search/?api=1&query=Dentist%20in%20Austin%2C%20Texas%2C%20United%20States
 ```
 
-If `geographicCell` is non-empty, it is the most specific geography label.
+This URL is used only to navigate the browser UI; data must be extracted from rendered page content/accessibility DOM rather than Google Places API or hidden Maps data endpoints.
 
-Pagination uses the same search input plus the previous response `nextPageToken` as request `pageToken`. All search parameters remain the same across pages except the allowed page controls.
+The provider builds search text from the most specific geography:
 
-The adapter must:
+```ts
+const place = input.geographicCell || input.city || input.region || input.country;
+const searchText = `${input.query} in ${place}`;
+```
 
-- parse successful JSON responses.
-- return an empty result list when `places` is absent.
-- require `place.id` to normalize a result.
-- map `displayName.text`, `formattedAddress`, `primaryType`, and coordinates.
-- expose a stable `rawReference` such as `google-place:<place-id>`.
-- throw a typed `DiscoveryProviderError` on non-2xx responses with `statusCode` and `rateLimited = statusCode === 429`.
+### Deterministic extraction first
 
-No Google-specific response shape escapes `packages/discovery` except as the generic raw result type used for provenance storage.
+For cost, speed, and reproducibility, normal discovery uses deterministic Playwright locators and DOM/accessibility extraction first.
 
-## Configuration
+The extractor looks for the rendered results feed and visible/public listing anchors/cards, and extracts only M4 fields:
 
-Add optional server-only:
+- business/listing name.
+- formatted address when present in the listing card/detail surface.
+- category when present.
+- canonical public Maps listing URL/reference.
+- coordinates only if they are directly available from the canonical public URL/rendered surface without calling hidden data services; otherwise null.
+
+M4 must not extract website, email, or phone merely because the Maps detail page exposes them; those belong to later milestones.
+
+### Stable browser listing identity
+
+Browser discovery does not assume a Google Places API `place_id`.
+
+For each rendered listing:
+
+1. normalize its public Maps listing URL by removing search/tracking-only query parameters and fragments.
+2. use an explicit stable public identifier from the canonical URL only when one is clearly available.
+3. otherwise compute a SHA-256 digest of the normalized canonical Maps URL.
+
+`providerExternalId` is therefore stable within the browser source without requiring a paid/undocumented API.
+
+Example fallback:
 
 ```text
-GOOGLE_PLACES_API_KEY
+maps-url-sha256:<hex>
 ```
 
-to `@ai-crm/config` and `.env.example`.
+`rawReference` stores the normalized canonical public Maps URL.
 
-The environment schema keeps the value optional so normal API/worker startup and CI do not require a paid provider credential. `GooglePlacesDiscoveryProvider` construction requires a non-empty key.
+## AI-guided browser interpretation
 
-Never expose the key through the web application or API responses.
+AI is an optional recovery/interpretation layer, not the primary per-record parser.
+
+Define:
+
+```ts
+export interface BrowserPageInterpreter {
+  interpret(input: {
+    url: string;
+    title: string;
+    visibleText: string;
+    accessibilitySnapshot: string;
+  }): Promise<BrowserInterpretation>;
+}
+```
+
+`BrowserInterpretation` may classify:
+
+```text
+RESULTS_PAGE
+NO_RESULTS
+BLOCKED_OR_CAPTCHA
+CONSENT_PAGE
+UNKNOWN_LAYOUT
+```
+
+and may return semantic hints describing which visible result container/listing labels should be used.
+
+Production composition can register an AI interpreter when an AI credential/model is configured. The initial AI adapter uses the existing server-side `OPENAI_API_KEY` through a narrow structured-output call; no Google API key is introduced.
+
+Important constraints:
+
+- AI never receives cookies, auth headers, browser storage, or unrelated page data.
+- AI sees a bounded sanitized accessibility/text snapshot, not arbitrary hidden DOM/network payloads.
+- AI is called only after deterministic recognition/extraction fails or the page state is ambiguous.
+- AI may identify a blocked/CAPTCHA page but must never propose or execute challenge bypass.
+- deterministic tests use a fake interpreter; standard CI needs no AI credential and performs no paid AI calls.
+
+If no AI interpreter is configured and deterministic extraction encounters an unknown layout, the provider fails clearly and lets queue retry/error handling apply.
+
+## Browser continuation cursor
+
+Google Maps uses infinite scrolling, so `nextPageToken` is replaced by a provider-neutral `continuationCursor` persisted on `SearchTask`.
+
+For `google-maps-browser`, the cursor is a versioned JSON string such as:
+
+```json
+{
+  "v": 1,
+  "seenIds": ["maps-url-sha256:..."],
+  "scrollRounds": 4
+}
+```
+
+Rules:
+
+- cursor JSON is validated before use.
+- `seenIds` contains only provider external IDs for this SearchTask and is capped to a documented maximum.
+- continuation reopens the public search URL in a fresh browser context, scrolls the feed, skips already-seen IDs, and collects up to `pageSize` new unique listings.
+- exact candidate/source database uniqueness still protects against result-order changes and overlap.
+- if the feed clearly reaches its end or no new unique listings appear after a bounded number of scroll rounds, `nextCursor` is null and the SearchTask completes.
+
+No correctness requirement depends on preserving an in-memory page between queue jobs.
 
 ## Persistence
 
 ### BusinessCandidate
 
-Persist normalized provider candidates separately from the canonical `Business` entity that M5 will introduce.
+Persist normalized browser-source candidates separately from the canonical `Business` entity that M5 will introduce.
 
-Fields:
+Fields remain:
 
 ```text
 id UUID
@@ -163,13 +285,11 @@ Uniqueness:
 campaignId + provider + providerExternalId
 ```
 
-This suppresses exact same-provider duplicates caused by overlapping `SearchTask`s without performing M5 cross-provider/fuzzy canonical deduplication.
-
 ### BusinessSource
 
-Preserve provenance between a candidate and the search task that discovered it.
+Preserve provenance between a candidate and the SearchTask that discovered it.
 
-Fields:
+Fields remain:
 
 ```text
 id UUID
@@ -187,11 +307,9 @@ Uniqueness:
 businessCandidateId + searchTaskId
 ```
 
-A retry of the same task/page therefore does not create duplicate provenance.
-
 ### ProviderUsage
 
-Aggregate provider usage per campaign/provider:
+The existing model remains but represents discovery-source usage, not API billing only:
 
 ```text
 id UUID
@@ -208,62 +326,46 @@ createdAt
 updatedAt
 ```
 
-Uniqueness:
+For browser discovery:
+
+- `requestCount` increments once per browser discovery attempt/page execution.
+- `resultCount` counts rendered source results returned by the provider.
+- `errorCount` counts provider/browser failures.
+- `rateLimitCount` counts typed browser blocking/throttling responses when detectable.
+- `costAmount` stays null in M4 unless an AI interpreter later provides explicit measurable model usage accounting.
+
+### SearchTask cursor
+
+Use:
 
 ```text
-campaignId + provider
-```
-
-`costAmount` remains null when cost cannot be reliably determined. M4 does not hard-code Google SKU pricing.
-
-### SearchTask discovery cursor
-
-Extend `SearchTask` with:
-
-```text
-nextPageToken nullable
+continuationCursor nullable Text
 pageNumber Int default 1
 ```
 
-The provider cursor is PostgreSQL state, not queue-only state. This makes pagination repairable after crashes, pauses, or enqueue failures.
+The browser continuation state is PostgreSQL state, not in-memory browser state or queue-only state.
 
 ## Campaign lifecycle
 
-Add the M4 phase status:
+Keep the M4 `DISCOVERING` status and the already-designed lifecycle:
 
 ```text
-DISCOVERING
+DRAFT -> PLANNING -> DISCOVERING
+PLANNING | DISCOVERING -> PAUSED
+PAUSED -> PLANNING
+DRAFT | PLANNING | DISCOVERING | PAUSED -> CANCELLED
 ```
 
-Existing statuses remain:
+The campaign `updatedAt` timestamp remains the execution generation.
+
+Before any browser or AI I/O, the discovery worker must require:
 
 ```text
-DRAFT
-PLANNING
-PAUSED
-CANCELLED
-```
-
-M4 does not add later `ENRICHING`/`RESEARCHING` phases yet.
-
-Lifecycle behavior:
-
-- start: `DRAFT -> PLANNING`, enqueue a versioned `campaign-plan` job.
-- campaign-plan after durable planning: conditionally transition `PLANNING -> DISCOVERING`, then schedule pending SearchTasks.
-- pause: `PLANNING | DISCOVERING -> PAUSED`.
-- resume: `PAUSED -> PLANNING`, enqueue a fresh versioned `campaign-plan`; M3 replay reuses the SearchPlan/tasks and M4 reschedules only unfinished discovery work.
-- cancel: `DRAFT | PLANNING | DISCOVERING | PAUSED -> CANCELLED`.
-
-The campaign `updatedAt` timestamp is the execution generation. Every discovery job includes `campaignVersion = campaign.updatedAt.toISOString()` from the `DISCOVERING` campaign row.
-
-Before any external request, the discovery worker reloads the campaign and requires:
-
-```text
-status == DISCOVERING
+campaign.status == DISCOVERING
 campaign.updatedAt.toISOString() == payload.campaignVersion
 ```
 
-If either check fails, the queued job is stale and exits without calling the provider. This makes pause/resume/cancel immediately invalidate already queued discovery work without needing queue-wide cancellation.
+Stale jobs exit without launching a browser.
 
 ## Queue contracts
 
@@ -273,27 +375,7 @@ Keep the established queue name:
 campaign-discovery
 ```
 
-Do not add a second application queue called `business-discovery`.
-
-The processor/module may be named `business-discovery.processor.ts` while consuming `campaign-discovery`.
-
-### campaign-plan payload
-
-Remain identifier-oriented:
-
-```text
-jobId
-workspaceId
-campaignId
-```
-
-The idempotency key becomes versioned so resume can publish a fresh planner replay:
-
-```text
-campaign-plan:<campaignId>:<campaign-updatedAt-iso>
-```
-
-### campaign-discovery payload
+Payload remains identifier-oriented:
 
 ```text
 jobId
@@ -304,105 +386,69 @@ campaignVersion
 pageNumber
 ```
 
-All values are small strings because `QueuePayloadInput` currently permits string values only.
-
-Idempotency key:
+Idempotency remains:
 
 ```text
 campaign-discovery:<searchTaskId>:<campaignVersion>:page:<pageNumber>
 ```
 
+Browser cursor data never travels as the queue source of truth.
+
 ## Planning-to-discovery handoff
 
-After `planCampaignSearch()` creates/reuses the durable task space, the production `campaign-plan` processor:
+Keep the existing M4 handoff already implemented on the feature branch:
 
-1. reloads the campaign.
-2. exits without scheduling if `PAUSED` or `CANCELLED`.
-3. transitions `PLANNING -> DISCOVERING` with a conditional update, or accepts an already-`DISCOVERING` campaign during replay.
-4. reads unfinished SearchTasks (`PENDING`, `FAILED`) for the campaign plan.
-5. schedules one idempotent `campaign-discovery` job per task at its persisted `pageNumber`.
+1. planner creates/reuses SearchPlan/SearchTasks.
+2. campaign transitions `PLANNING -> DISCOVERING`.
+3. unfinished SearchTasks are scheduled independently.
+4. replay uses deterministic idempotency.
+5. pause/cancel winning a race prevents new work from being scheduled.
 
-Scheduling may happen in bounded batches but each job receives its own idempotency key.
-
-A partial scheduling failure causes the campaign-plan job to fail and pg-boss retry. On replay, already scheduled jobs are returned through idempotency and missing jobs are created.
+Change only the default provider from `google-places` to `google-maps-browser`.
 
 ## Discovery processor
 
-Create `apps/worker/src/business-discovery.processor.ts`.
+Keep the existing worker-side persistence/orchestration design and make it cursor-neutral.
 
-The processor runs inside the existing `processTrackedJob()` wrapper so queue-level attempts/failures remain visible through `JobMetadata`.
-
-### Stale-job checks
-
-Before provider I/O:
+Before source I/O:
 
 - load SearchTask with SearchPlan/Campaign.
-- require payload workspace/campaign/task identifiers to match persisted relations.
-- require campaign status/version to match as described above.
-- completed/cancelled task => successful no-op.
-- payload `pageNumber` lower than persisted `SearchTask.pageNumber` => provider call already committed; repair scheduling for the persisted current page if a token remains, then return.
-- payload `pageNumber` higher than persisted page => reject as inconsistent.
+- validate workspace/campaign/task identity.
+- validate campaign status/version.
+- completed/cancelled task => no-op.
+- stale lower page => repair scheduling from persisted current page/cursor.
+- higher-than-persisted page => reject.
+- claim `PENDING | FAILED -> RUNNING` and increment attemptCount.
 
-### Claim and attempt tracking
+Provider call:
 
-For the current page, conditionally transition:
+- first page without cursor: `searchBusinesses()`.
+- later page: require `continuationCursor` and call `continueSearch()`.
 
-```text
-PENDING | FAILED -> RUNNING
-```
+Result transaction:
 
-and increment `attemptCount`.
+1. normalize each rendered listing.
+2. upsert candidate by campaign/provider/providerExternalId.
+3. upsert provenance candidate+SearchTask.
+4. increment result counters.
+5. persist `nextCursor` into `continuationCursor`.
+6. if cursor exists: increment pageNumber and return task to PENDING.
+7. otherwise: mark task COMPLETED and clear cursor.
+8. update ProviderUsage.
 
-A stale concurrent claim exits without duplicate provider I/O.
+A browser/source failure marks only that SearchTask FAILED, increments ProviderUsage errors/rate-limit counters as appropriate, and rethrows to pg-boss. It does not fail/cancel the campaign or unrelated tasks.
 
-### Provider call
+## Crash-safe continuation repair
 
-Build `BusinessSearchInput` from the SearchTask.
+If result persistence commits page N and page N+1 scheduling fails:
 
-- page 1 with no persisted token: `searchBusinesses()`.
-- later page: require persisted `nextPageToken` and call `getNextPage()`.
+- PostgreSQL already contains page N+1 plus `continuationCursor`.
+- the current queue job fails so pg-boss retries.
+- replay sees payload page N < persisted page N+1.
+- it schedules the persisted page N+1 using the deterministic idempotency key.
+- it does not reopen/reprocess page N.
 
-Increment `ProviderUsage.requestCount` immediately before external I/O.
-
-On provider error:
-
-- increment `errorCount`.
-- increment `rateLimitCount` for typed 429 failures.
-- transition task `RUNNING -> FAILED` and preserve its cursor/page.
-- rethrow so pg-boss owns retry/backoff/DLQ.
-
-Other campaign SearchTasks continue independently; one provider failure does not transition the campaign itself to `FAILED`.
-
-### Result transaction
-
-Normalize every raw provider result.
-
-Inside one database transaction:
-
-1. upsert `BusinessCandidate` by campaign/provider/providerExternalId.
-2. create/upsert `BusinessSource` provenance for candidate + SearchTask.
-3. increment `SearchTask.resultCount` by provider result count.
-4. increment `SearchTask.uniqueBusinessCount` only by newly created candidate-task provenance edges.
-5. write `nextPageToken`.
-6. if a next page exists: increment `pageNumber`, return task to `PENDING`.
-7. otherwise: set task `COMPLETED` and clear cursor.
-8. increment `ProviderUsage.resultCount` by provider result count.
-
-Existing candidate/source records make result persistence idempotent.
-
-### Crash-safe pagination repair
-
-If page-N result persistence succeeds but enqueueing page N+1 fails:
-
-- throw the scheduling failure so pg-boss retries page N's queue job.
-- on retry, the persisted SearchTask is already at page N+1.
-- the stale-page check detects payload page N < persisted page N+1.
-- it schedules the persisted current page using the stored token and deterministic idempotency key.
-- it does **not** call the provider for page N again.
-
-This prevents both lost pagination and avoidable provider cost.
-
-## Worker composition
+## Worker composition and concurrency
 
 `registerJobWorkers()` registers:
 
@@ -412,75 +458,94 @@ campaign-plan
 campaign-discovery
 ```
 
-Worker startup constructs a `DiscoveryProviderRegistry`. Google is registered only when `GOOGLE_PLACES_API_KEY` is configured. Missing provider configuration does not stop worker boot; a discovery job requiring the missing provider fails clearly and follows queue retry/DLQ behavior.
+Worker startup constructs the browser provider without any Google API credential.
+
+Browser concurrency must be bounded independently of pg-boss queue throughput. M4 starts conservatively with a configurable per-worker browser concurrency default of `1`.
+
+Recommended environment:
+
+```text
+DISCOVERY_BROWSER_HEADLESS=true
+DISCOVERY_BROWSER_CONCURRENCY=1
+DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS=30000
+DISCOVERY_BROWSER_ACTION_TIMEOUT_MS=10000
+DISCOVERY_AI_MODEL=<optional model>
+```
+
+`OPENAI_API_KEY` remains optional and is used only when the optional AI page interpreter is enabled/configured.
+
+There is no `GOOGLE_PLACES_API_KEY`.
 
 ## Testing strategy
 
-### packages/discovery unit tests
+### Discovery package unit tests
 
-Use injected `fetch` to verify:
+Use local deterministic HTML/DOM fixtures and injected browser/page abstractions to verify:
 
-- first-page request endpoint/method/body/headers/field mask.
-- next-page request preserves query/search parameters and adds page token.
-- normalization of ID/name/address/category/location.
-- missing `places` -> empty page.
-- non-2xx -> typed provider error.
-- 429 -> `rateLimited = true`.
+- search URL/query construction.
+- visible results feed extraction.
+- stable canonical URL identity/hash fallback.
+- fields normalize to provider-neutral output.
+- scrolling collects bounded new unique results.
+- continuation cursor serialization/validation.
+- continuation skips already-seen IDs.
+- end-of-feed produces null cursor.
+- CAPTCHA/blocked/login page classification produces typed access error and never attempts bypass.
+- unknown layout invokes fake AI interpreter only when configured.
+- AI interpreter is never called on normal deterministic extraction success.
 
-No real quota is spent by normal CI.
+### Browser integration tests
 
-### database integration tests
+Standard CI installs Chromium and runs Playwright against local fixture pages served from the test process. No live Google or AI credential is required.
 
-Verify:
+The fixture integration test must exercise a real Chromium instance, scrollable result feed, listing extraction, cursor continuation, and browser cleanup.
 
-- new models and relations.
-- exact candidate uniqueness.
-- source uniqueness.
-- usage defaults.
-- SearchTask cursor defaults.
+Playwright's official CI guidance requires installing browser binaries/dependencies explicitly; CI will run the documented Chromium install command before tests. citeturn124774search0turn124774search1
 
-### worker service/integration tests
+### Worker/database integration tests
 
-Verify:
+Keep and adapt the existing M4 tests for:
 
-- campaign-plan transitions to DISCOVERING and schedules unfinished tasks with identifier-only/versioned payloads.
-- pause/cancel invalidates stale queued discovery jobs before provider I/O.
-- resume publishes a new planner generation.
-- one discovery page normalizes/stores candidates and provenance.
-- duplicate provider results across tasks do not duplicate the same exact candidate.
-- pagination stores cursor/page and schedules the next job.
-- replay after committed page does not re-call provider and repairs missing next-page scheduling.
-- provider error marks task FAILED and increments usage.
-- 429 increments rate-limit usage.
-- one failed task does not cancel unrelated tasks/campaign.
-- an independently started pg-boss worker can consume a persisted `campaign-discovery` job using an injected deterministic provider fixture and persist candidates.
+- campaign-plan -> DISCOVERING durable scheduling.
+- stale pause/cancel jobs avoid browser/provider I/O.
+- successful browser-provider page persists candidates/provenance/counters.
+- duplicate exact listing IDs across tasks do not duplicate BusinessCandidate.
+- cursor continuation schedules next page.
+- committed-page replay repairs missing scheduling without repeating source I/O.
+- blocked/rate-limited provider error marks only the SearchTask failed and updates usage.
+- independent pg-boss worker can consume a discovery job with an injected deterministic browser provider fixture.
 
-### live provider test
+### Opt-in live browser smoke
 
-Add an opt-in test guarded by:
+A live browser smoke test may be guarded by:
 
 ```text
-GOOGLE_PLACES_API_KEY
-RUN_LIVE_DISCOVERY_TESTS=1
+RUN_LIVE_BROWSER_DISCOVERY_TESTS=1
 ```
 
-It performs one narrow real Text Search against a stable broad query and verifies at least one normalized business. It is skipped in standard CI unless both values are configured.
+It may open the public configured source, run one narrow query, and verify at least one normalized listing only when the environment permits it.
+
+The live test must fail/stop rather than bypass CAPTCHA, login, consent/access restrictions, or blocking. It is not part of normal CI and is not required for merge when the external site is unavailable or disallows automation.
 
 ## Acceptance criteria
 
 M4 is complete when:
 
-- `packages/discovery` owns the provider abstraction and Google Places implementation.
-- normal CI needs no paid provider secret.
-- an opt-in real Google request can return and normalize actual businesses.
-- BusinessCandidate, BusinessSource, ProviderUsage, and SearchTask cursor state are durable in PostgreSQL.
+- no Google Places API code, key, SDK, field mask, or API request remains.
+- `packages/discovery` owns the provider-neutral browser discovery abstraction.
+- the M3 planner produces `google-maps-browser` SearchTasks and migration upgrades legacy `google-places` task labels.
+- Playwright Chromium can discover and normalize businesses from deterministic rendered browser fixtures in CI.
+- the real provider drives the public browser surface rather than a business-data API.
+- deterministic extraction is primary; optional AI interpretation is isolated and only used for ambiguous/changed page states.
+- CAPTCHA/login/access-control bypass is explicitly absent.
+- BusinessCandidate, BusinessSource, ProviderUsage, and continuation cursor state are durable in PostgreSQL.
 - campaign-plan schedules durable discovery work after planning.
-- campaign-discovery independently processes SearchTasks and pagination.
-- duplicate exact Google candidates are not repeatedly persisted within one campaign.
+- campaign-discovery independently processes SearchTasks and continuation.
+- exact browser listing candidates are not repeatedly persisted within a campaign.
 - provenance is retained.
-- provider usage/errors/429s are tracked.
-- page persistence + enqueue failure is recoverable without repeating the prior provider page.
-- pause/resume/cancel invalidate stale jobs before provider I/O.
-- provider-specific code stays outside campaign/domain orchestration.
-- a provider failure does not crash/cancel the whole campaign.
-- frozen install, Prisma validation/migrations, tests, typecheck, lint, build, and compiled smoke-start pass on the exact merge candidate.
+- usage/errors/blocking events are tracked.
+- committed-page + enqueue failure is recoverable without replaying the prior browser page's persistence.
+- pause/resume/cancel invalidate stale jobs before browser/AI I/O.
+- source-specific code stays outside campaign/domain orchestration.
+- source failure does not crash/cancel the whole campaign.
+- frozen install, Prisma validation/migrations, unit/integration tests, typecheck, lint, build, Chromium-backed fixture tests, and compiled smoke-start pass on the exact merge candidate.
