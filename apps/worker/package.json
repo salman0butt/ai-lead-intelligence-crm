@@ -3,7 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "dependencies": { "@ai-crm/config": "workspace:*", "@ai-crm/database": "workspace:*" },
+  "dependencies": {
+    "@ai-crm/config": "workspace:*",
+    "@ai-crm/database": "workspace:*",
+    "@ai-crm/queue": "workspace:*"
+  },
   "devDependencies": { "@types/node": "^24.0.0", "typescript": "^6.0.3", "vitest": "^4.1.11" },
   "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit", "build": "tsc -p tsconfig.build.json", "start": "node dist/main.js" }
 }
