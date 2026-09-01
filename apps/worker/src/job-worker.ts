@@ -1,11 +1,14 @@
 import type { DatabaseClient } from '@ai-crm/database';
+import { DiscoveryProviderRegistry } from '@ai-crm/discovery';
 import type { PgBossQueueService } from '@ai-crm/queue';
+import { processBusinessDiscoveryJob } from './business-discovery.processor.js';
 import { processCampaignPlanJob, type CampaignPlanTask } from './campaign-plan.processor.js';
 import { processSystemTestJob, type SystemTestTask } from './system-test.processor.js';
 
 export async function registerJobWorkers(
   database: DatabaseClient,
   queue: PgBossQueueService,
+  providers: DiscoveryProviderRegistry = new DiscoveryProviderRegistry(),
   systemTestTask?: SystemTestTask,
   campaignPlanTask?: CampaignPlanTask,
 ): Promise<void> {
@@ -14,5 +17,8 @@ export async function registerJobWorkers(
   });
   await queue.work('campaign-plan', async (job) => {
     await processCampaignPlanJob(database, queue, job, campaignPlanTask);
+  });
+  await queue.work('campaign-discovery', async (job) => {
+    await processBusinessDiscoveryJob(database, queue, providers, job);
   });
 }
