@@ -27,7 +27,7 @@ integration('business discovery persistence', () => {
     await database.$disconnect();
   });
 
-  it('persists discovery cursor, normalized candidates, provenance, and usage defaults with exact uniqueness', async () => {
+  it('persists browser cursor, normalized candidates, provenance, and usage defaults with exact uniqueness', async () => {
     const suffix = randomUUID();
     const user = await database.user.create({
       data: {
@@ -68,7 +68,7 @@ integration('business discovery persistence', () => {
             region: 'Texas',
             city: 'Austin',
             query: 'Dentist',
-            provider: 'google-places',
+            provider: 'google-maps-browser',
           },
         },
       },
@@ -77,20 +77,20 @@ integration('business discovery persistence', () => {
     const task = plan.tasks[0]!;
 
     expect(task.pageNumber).toBe(1);
-    expect(task.nextPageToken).toBeNull();
+    expect(task.continuationCursor).toBeNull();
 
     const candidate = await database.businessCandidate.create({
       data: {
         workspaceId: workspace.id,
         campaignId: campaign.id,
-        provider: 'google-places',
-        providerExternalId: 'place-1',
+        provider: 'google-maps-browser',
+        providerExternalId: 'maps-url-sha256:place-1',
         name: 'Example Dental',
         formattedAddress: '123 Main St, Austin, TX',
         category: 'dentist',
         latitude: 30.1,
         longitude: -97.7,
-        rawReference: 'google-place:place-1',
+        rawReference: 'https://www.google.com/maps/place/example-dental',
       },
     });
 
@@ -98,9 +98,9 @@ integration('business discovery persistence', () => {
       data: {
         businessCandidateId: candidate.id,
         searchTaskId: task.id,
-        provider: 'google-places',
-        providerExternalId: 'place-1',
-        rawPayload: { id: 'place-1', displayName: { text: 'Example Dental' } },
+        provider: 'google-maps-browser',
+        providerExternalId: 'maps-url-sha256:place-1',
+        rawPayload: { name: 'Example Dental' },
       },
     });
 
@@ -108,7 +108,7 @@ integration('business discovery persistence', () => {
       data: {
         workspaceId: workspace.id,
         campaignId: campaign.id,
-        provider: 'google-places',
+        provider: 'google-maps-browser',
       },
     });
 
@@ -127,8 +127,8 @@ integration('business discovery persistence', () => {
         data: {
           workspaceId: workspace.id,
           campaignId: campaign.id,
-          provider: 'google-places',
-          providerExternalId: 'place-1',
+          provider: 'google-maps-browser',
+          providerExternalId: 'maps-url-sha256:place-1',
           name: 'Duplicate Example Dental',
           formattedAddress: '123 Main St, Austin, TX',
         },
@@ -140,9 +140,9 @@ integration('business discovery persistence', () => {
         data: {
           businessCandidateId: candidate.id,
           searchTaskId: task.id,
-          provider: 'google-places',
-          providerExternalId: 'place-1',
-          rawPayload: { id: 'place-1' },
+          provider: 'google-maps-browser',
+          providerExternalId: 'maps-url-sha256:place-1',
+          rawPayload: { name: 'Example Dental' },
         },
       }),
     ).rejects.toThrow();
