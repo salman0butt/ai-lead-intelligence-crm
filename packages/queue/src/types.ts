@@ -11,6 +11,13 @@ export interface QueuePayload extends QueuePayloadInput {
   jobId: string;
 }
 
+export interface QueueWorkJob {
+  id: string;
+  data: QueuePayload;
+}
+
+export type QueueWorkHandler = (job: QueueWorkJob) => Promise<void>;
+
 export interface EnqueueOptions {
   idempotencyKey?: string;
   priority?: number;
