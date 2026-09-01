@@ -2,14 +2,14 @@
 
 Autonomous AI Lead Intelligence & Sales CRM.
 
-The repository currently completes **Milestone 1 — PostgreSQL Job System** on top of the authenticated multi-tenant foundation from Milestone 0. Campaign models, lead discovery, crawling, enrichment, AI research, and outreach generation business logic remain intentionally outside this milestone.
+The repository currently completes **Milestone 2 — Campaign Management** on top of the authenticated multi-tenant foundation from Milestone 0 and the PostgreSQL job system from Milestone 1. Users can persist workspace-scoped campaigns, control their lifecycle, and hand campaign planning durably to an independent worker. Google Business discovery, enrichment, crawling, AI research, outreach generation, provider integrations, SSE progress, and campaign result tables remain intentionally outside this milestone.
 
 ## Architecture
 
 ```text
 apps/
   web/       Next.js + React + TypeScript + Tailwind + TanStack Query
-  api/       NestJS API, authentication, workspaces, job scheduling/status
+  api/       NestJS API, authentication, workspaces, campaigns, job scheduling/status
   worker/    Independent pg-boss worker process
 
 packages/
@@ -54,7 +54,78 @@ The web application is available at `http://localhost:3000` and the API at `http
 - Login sessions use opaque random bearer tokens; only SHA-256 token hashes are persisted.
 - Every registered user starts with a workspace and an `OWNER` membership.
 - Workspace-scoped API access is authorized through `WorkspaceMember` on the backend.
-- Jobs cannot be scheduled or read merely by supplying another workspace ID.
+- Campaign and job access cannot be gained merely by supplying another workspace ID.
+
+## Campaign management
+
+`Campaign` is persisted in PostgreSQL with:
+
+```text
+id
+workspaceId
+createdByUserId
+name
+country
+region (optional)
+city (optional)
+niche
+requestedLeadCount
+status
+createdAt
+updatedAt
+```
+
+`requestedLeadCount` must be a positive integer and Milestone 2 does not impose an arbitrary small product cap.
+
+Campaign status is one of:
+
+```text
+DRAFT
+PLANNING
+PAUSED
+CANCELLED
+```
+
+Lifecycle transitions are enforced centrally in `CampaignsService` with conditional database updates so stale or concurrent transitions cannot both succeed:
+
+```text
+DRAFT -> PLANNING
+PLANNING -> PAUSED
+PAUSED -> PLANNING
+DRAFT | PLANNING | PAUSED -> CANCELLED
+```
+
+Invalid or stale transitions return HTTP `409 Conflict`. Every campaign create/read/list/lifecycle operation verifies workspace membership on the backend.
+
+### Campaign API
+
+All endpoints require the normal bearer session token.
+
+```http
+POST /campaigns
+GET /campaigns?workspaceId=<workspace-uuid>
+GET /campaigns/<campaign-uuid>
+POST /campaigns/<campaign-uuid>/start
+POST /campaigns/<campaign-uuid>/pause
+POST /campaigns/<campaign-uuid>/resume
+POST /campaigns/<campaign-uuid>/cancel
+```
+
+Starting a `DRAFT` campaign atomically moves it to `PLANNING` and schedules one idempotent `campaign-plan` job with the key `campaign-plan:<campaignId>`. The queue payload contains identifiers only: `workspaceId`, `campaignId`, and the correlated `jobId` added by the queue adapter. If publication fails before the job is accepted, the campaign is conditionally restored to `DRAFT` and the error is surfaced.
+
+Pausing and resuming only update the campaign lifecycle in Milestone 2. Resume does not create another planning job because actual discovery execution has not been implemented yet.
+
+### Campaign web routes
+
+The Next.js application adds:
+
+```text
+/campaigns
+/campaigns/new
+/campaigns/[id]
+```
+
+These routes reuse the existing browser API client, stored bearer session, selected workspace, and TanStack Query setup. The list displays campaign targeting, requested lead count, and status. The create route captures campaign targeting fields. The detail route displays the current state and only shows lifecycle actions valid for that state.
 
 ## PostgreSQL job system
 
@@ -67,7 +138,7 @@ Application code depends on the `QueueService` abstraction rather than calling p
 - `schedule()`
 - `getStatus()`
 
-Milestone 1 defines these durable queues:
+The durable queue catalog is:
 
 ```text
 system-test
@@ -81,7 +152,7 @@ outreach-generation
 
 Each application queue has a corresponding `-dlq` dead-letter queue. Queue definitions centralize concurrency, retry limits, exponential backoff, retry delay caps, expiration, retention, heartbeat, and dead-letter settings. Priority can be supplied per job.
 
-Queue payloads carry identifiers only. The M1 `system-test` payload contains the workspace ID plus the correlated job ID; later milestones should pass entity IDs rather than embedding scraped pages or other large datasets in queue messages.
+Queue payloads carry identifiers and small control fields only. Large scraped pages, research documents, or business datasets belong in PostgreSQL/object storage and should be referenced by ID rather than embedded in queue messages.
 
 ### Durable metadata and idempotency
 
@@ -99,13 +170,11 @@ finishedAt
 failureReason
 ```
 
-An internal workspace-scoped idempotency key is also persisted with a unique database constraint. A caller-supplied idempotency key makes duplicate scheduling return the already-reserved job instead of creating another executable job. If a key is omitted from `/jobs/test`, the API generates a fresh key so intentional repeated test jobs remain possible.
+An internal workspace-scoped idempotency key is also persisted with a unique database constraint. A caller-supplied idempotency key makes duplicate scheduling return the already-reserved job instead of creating another executable job.
 
 The metadata row is reserved before publishing to pg-boss. If publication fails, the reservation is removed. The same UUID is used as the application job ID, pg-boss job ID, payload correlation ID, and status lookup ID.
 
 ### Jobs API
-
-Both endpoints require the normal bearer session token.
 
 Schedule a test job:
 
@@ -133,11 +202,13 @@ The API verifies membership in the job's workspace before returning status.
 
 ### Worker behavior
 
-`apps/worker` is a separate process. It opens its own pg-boss instance, registers workers using the concurrency configured in the queue catalog, and currently processes only `system-test` jobs.
+`apps/worker` is a separate process with its own PostgreSQL/pg-boss lifecycle. It currently registers consumers for `system-test` and `campaign-plan`.
 
-For each attempt the processor records `RUNNING` and increments `attempts`. A successful attempt records `COMPLETED`; a failed attempt records `FAILED` with `failureReason` and then rethrows so pg-boss owns retry/backoff and eventual dead-letter behavior.
+Both processors run through the tracked-job execution wrapper. Each attempt records `RUNNING` and increments `attempts`; success records `COMPLETED`; failure records `FAILED` with `failureReason` and rethrows so pg-boss owns retry/backoff and eventual dead-letter behavior.
 
-Stopping or restarting the API does not own or erase queued jobs. A separately started worker can consume jobs already persisted in PostgreSQL.
+The `campaign-plan` domain handler is intentionally a no-op in Milestone 2. Its purpose is to prove the durable API-to-worker handoff and tracked job lifecycle without prematurely implementing discovery.
+
+Stopping or restarting the API/producer does not erase queued jobs. A separately started worker can consume planning work already persisted in PostgreSQL.
 
 ## Environment variables
 
@@ -150,7 +221,7 @@ NODE_ENV
 OPENAI_API_KEY
 ```
 
-`OPENAI_API_KEY` remains optional and unused in Milestone 1.
+`OPENAI_API_KEY` remains optional and unused in Milestone 2.
 
 ## Database commands
 
@@ -171,13 +242,17 @@ pnpm verify
 
 CI starts PostgreSQL, installs from the frozen lockfile, validates and applies Prisma migrations, runs unit and database-backed integration tests, typechecks, lints, builds, and smoke-starts the compiled API, worker, and web applications independently.
 
-The M1 PostgreSQL integration coverage verifies that:
+Current PostgreSQL-backed coverage verifies that:
 
+- campaign targeting, ownership, a large requested-lead target, and the `DRAFT` default persist correctly;
 - a queued job survives the producer being stopped and is completed by a separately started worker;
+- a `campaign-plan` job survives producer shutdown and is consumed by an independent worker using identifier-only payload data;
 - duplicate scheduling with the same workspace-scoped idempotency key produces one persisted job;
 - failed attempts are retried and attempt counts are persisted;
 - terminal failures remain visible with their failure reason after retries are exhausted.
 
+API/service tests additionally cover workspace isolation, campaign lifecycle conflicts, start idempotency, queue payload shape, and rollback when queue publication fails. Frontend tests cover campaign geography formatting and valid lifecycle-action visibility.
+
 ## Milestone boundary
 
-Milestone 1 ends with durable asynchronous job infrastructure. The named future queues exist as infrastructure boundaries, but campaign planning, campaign/lead models, Google Business discovery, enrichment, crawling, AI research, and outreach generation are **not** implemented here. Those belong to Milestone 2 and later milestones.
+Milestone 2 ends with production campaign persistence, workspace-isolated campaign APIs/UI, lifecycle control, and a durable `campaign-plan` worker handoff. The later queue names already exist as infrastructure boundaries, but Google Business discovery, lead/business result models, enrichment, website crawling, AI research, outreach generation, provider integrations, SSE progress streaming, and autonomous campaign execution are **not** implemented yet.

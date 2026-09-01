@@ -8,5 +8,6 @@ import { QueueProvider } from './queue.provider.js';
   imports: [AuthModule],
   controllers: [JobsController],
   providers: [JobsService, QueueProvider],
+  exports: [QueueProvider],
 })
 export class JobsModule {}

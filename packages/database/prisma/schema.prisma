@@ -21,15 +21,23 @@ enum JobStatus {
   CANCELLED
 }
 
+enum CampaignStatus {
+  DRAFT
+  PLANNING
+  PAUSED
+  CANCELLED
+}
+
 model User {
-  id           String            @id @default(uuid()) @db.Uuid
-  email        String            @unique @db.VarChar(320)
-  name         String?           @db.VarChar(120)
-  passwordHash String
-  memberships  WorkspaceMember[]
-  sessions     Session[]
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id               String            @id @default(uuid()) @db.Uuid
+  email            String            @unique @db.VarChar(320)
+  name             String?           @db.VarChar(120)
+  passwordHash     String
+  memberships      WorkspaceMember[]
+  sessions         Session[]
+  createdCampaigns Campaign[]         @relation("CampaignCreator")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 }
 
 model Workspace {
@@ -37,6 +45,7 @@ model Workspace {
   name      String            @db.VarChar(120)
   members   WorkspaceMember[]
   jobs      JobMetadata[]
+  campaigns Campaign[]
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 }
@@ -81,4 +90,24 @@ model JobMetadata {
   @@unique([queue, workspaceId, idempotencyKey])
   @@index([workspaceId, status])
   @@index([queue, status])
+}
+
+model Campaign {
+  id                 String         @id @default(uuid()) @db.Uuid
+  workspaceId        String         @db.Uuid
+  createdByUserId    String         @db.Uuid
+  name               String         @db.VarChar(160)
+  country            String         @db.VarChar(120)
+  region             String?        @db.VarChar(120)
+  city               String?        @db.VarChar(120)
+  niche              String         @db.VarChar(160)
+  requestedLeadCount Int
+  status             CampaignStatus @default(DRAFT)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  workspace          Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser      User           @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, status])
 }

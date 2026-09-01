@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, feat/milestone-0-foundation, feat/milestone-1-postgres-job-system]
+    branches: [main, feat/milestone-0-foundation, feat/milestone-1-postgres-job-system, feat/milestone-2-campaign-management]
   pull_request:
 
 jobs:

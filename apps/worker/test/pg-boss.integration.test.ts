@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPrismaClient, type DatabaseClient } from '@ai-crm/database';
 import { PgBossQueueService } from '@ai-crm/queue';
+import { processCampaignPlanJob } from '../src/campaign-plan.processor.js';
 import { processSystemTestJob } from '../src/system-test.processor.js';
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -59,6 +60,35 @@ integration('pg-boss PostgreSQL integration', () => {
     const completed = await waitForJob(database, queued.jobId, (job) => job.status === 'COMPLETED');
     expect(completed.attempts).toBe(1);
     expect(completed.finishedAt).toBeInstanceOf(Date);
+
+    await worker.stop();
+  }, 30_000);
+
+  it('hands campaign planning from a stopped producer to an independent worker using identifiers only', async () => {
+    const campaignId = randomUUID();
+    const producer = new PgBossQueueService(databaseUrl!, database);
+    await producer.start();
+    const queued = await producer.enqueue(
+      'campaign-plan',
+      { workspaceId, campaignId },
+      { idempotencyKey: `campaign-plan:${campaignId}`, retryLimit: 0 },
+    );
+    await producer.stop();
+
+    const receivedPayloads: Array<Record<string, string>> = [];
+    const worker = new PgBossQueueService(databaseUrl!, database);
+    await worker.start();
+    await worker.work('campaign-plan', async (job) =>
+      processCampaignPlanJob(database, job, async (payload) => {
+        receivedPayloads.push({ ...payload });
+      }),
+    );
+
+    const completed = await waitForJob(database, queued.jobId, (job) => job.status === 'COMPLETED');
+    expect(completed.attempts).toBe(1);
+    expect(receivedPayloads).toHaveLength(1);
+    expect(receivedPayloads[0]).toMatchObject({ jobId: queued.jobId, workspaceId, campaignId });
+    expect(Object.keys(receivedPayloads[0]!).sort()).toEqual(['campaignId', 'jobId', 'workspaceId']);
 
     await worker.stop();
   }, 30_000);
