@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/common';
 import { workspaceCreateSchema } from '@ai-crm/schemas';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
@@ -9,7 +9,7 @@ import { WorkspacesService } from './workspaces.service.js';
 @Controller('workspaces')
 @UseGuards(AuthGuard)
 export class WorkspacesController {
-  constructor(private readonly workspacesService: WorkspacesService) {}
+  constructor(@Inject(WorkspacesService) private readonly workspacesService: WorkspacesService) {}
 
   @Get()
   list(@CurrentUser() user: AuthUser) {
