@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
@@ -104,6 +105,7 @@ export default function DashboardPage() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
           <div><p className="text-sm font-semibold text-slate-500">AI Lead Intelligence CRM</p><h1 className="text-xl font-bold">Dashboard</h1></div>
           <div className="flex items-center gap-3">
+            {selectedWorkspaceId ? <Link className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white" href="/campaigns">Campaigns</Link> : null}
             <span className="hidden text-sm text-slate-600 sm:inline">{meQuery.data?.user.email}</span>
             <button className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium" onClick={logout}>Sign out</button>
           </div>
@@ -132,9 +134,13 @@ export default function DashboardPage() {
               <h2 className="mt-2 text-3xl font-bold">{dashboardQuery.data.workspace.name}</h2>
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
                 <div className="rounded-xl bg-slate-50 p-5"><p className="text-sm text-slate-500">Your role</p><p className="mt-1 font-semibold">{dashboardQuery.data.role}</p></div>
-                <div className="rounded-xl bg-slate-50 p-5"><p className="text-sm text-slate-500">Foundation status</p><p className="mt-1 font-semibold capitalize">{dashboardQuery.data.status}</p></div>
+                <div className="rounded-xl bg-slate-50 p-5"><p className="text-sm text-slate-500">Platform status</p><p className="mt-1 font-semibold capitalize">{dashboardQuery.data.status}</p></div>
               </div>
-              <p className="mt-8 text-sm leading-6 text-slate-600">Milestone 0 is intentionally limited to the platform foundation. Lead campaigns and background jobs begin in later milestones.</p>
+              <div className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-5">
+                <h3 className="font-bold">Campaign management is ready</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">Create workspace-scoped campaigns, control their lifecycle, and hand planning work durably to the PostgreSQL-backed worker. Discovery and enrichment come in later milestones.</p>
+                <Link className="mt-4 inline-flex rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href="/campaigns">Open campaigns</Link>
+              </div>
             </div>
           ) : null}
           {!selectedWorkspaceId ? <p className="text-slate-600">Create a workspace to continue.</p> : null}
