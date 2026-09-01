@@ -128,7 +128,7 @@ export class CampaignsService {
     next: CampaignStatus,
   ) {
     return this.db.$transaction(async (tx) => {
-      const status = Array.isArray(expected) ? { in: [...expected] } : expected;
+      const status = typeof expected === 'string' ? expected : { in: [...expected] };
       const result = await tx.campaign.updateMany({
         where: { id: campaignId, workspaceId, status },
         data: { status: next },
