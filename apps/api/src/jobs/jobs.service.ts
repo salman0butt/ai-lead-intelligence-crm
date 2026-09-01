@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { DatabaseClient } from '@ai-crm/database';
 import type { JobTestInput } from '@ai-crm/schemas';
@@ -19,8 +20,7 @@ export class JobsService {
       'system-test',
       { workspaceId: input.workspaceId },
       {
-        idempotencyKey:
-          input.idempotencyKey ?? `system-test:${input.workspaceId}:${userId}`,
+        idempotencyKey: input.idempotencyKey ?? `system-test:${randomUUID()}`,
       },
     );
   }
@@ -30,7 +30,17 @@ export class JobsService {
     if (!job) throw new NotFoundException('Job not found');
 
     await this.assertMembership(userId, job.workspaceId);
-    return job;
+    return {
+      jobId: job.jobId,
+      queue: job.queue,
+      status: job.status,
+      workspaceId: job.workspaceId,
+      attempts: job.attempts,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      failureReason: job.failureReason,
+    };
   }
 
   private async assertMembership(userId: string, workspaceId: string): Promise<void> {
