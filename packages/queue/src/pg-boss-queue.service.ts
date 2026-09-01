@@ -6,15 +6,19 @@ import type {
   EnqueueOptions,
   QueueJobResult,
   QueueJobStatus,
+  QueuePayload,
   QueuePayloadInput,
   QueueService,
+  QueueWorkHandler,
 } from './types.js';
 
 interface BossJobReference {
   id: string;
+  data?: Record<string, string>;
 }
 
 interface BossAdapter {
+  on(event: string, handler: (error: unknown) => void): unknown;
   start(): Promise<unknown>;
   stop(): Promise<unknown>;
   createQueue(name: string, options?: Record<string, unknown>): Promise<unknown>;
@@ -26,6 +30,11 @@ interface BossAdapter {
   findJobs(name: string, options?: Record<string, unknown>): Promise<BossJobReference[]>;
   cancel(name: string, id: string): Promise<unknown>;
   retry(name: string, id: string): Promise<unknown>;
+  work(
+    name: string,
+    options: Record<string, unknown>,
+    handler: (jobs: BossJobReference[]) => Promise<void>,
+  ): Promise<string>;
 }
 
 type JobMetadataRecord = Awaited<ReturnType<DatabaseClient['jobMetadata']['findUnique']>>;
@@ -38,7 +47,16 @@ export class PgBossQueueService implements QueueService {
     private readonly database: DatabaseClient,
     boss?: BossAdapter,
   ) {
-    this.boss = boss ?? (new PgBoss(databaseUrl) as unknown as BossAdapter);
+    this.boss =
+      boss ??
+      (new PgBoss({
+        connectionString: databaseUrl,
+        useListenNotify: true,
+      }) as unknown as BossAdapter);
+
+    this.boss.on('error', (error) => {
+      console.error('pg-boss error', error);
+    });
   }
 
   async start(): Promise<void> {
@@ -52,6 +70,20 @@ export class PgBossQueueService implements QueueService {
 
   async stop(): Promise<void> {
     await this.boss.stop();
+  }
+
+  async work(queue: QueueName, handler: QueueWorkHandler): Promise<string> {
+    return this.boss.work(
+      queue,
+      {
+        batchSize: 1,
+        newJobCheckIntervalSeconds: 1,
+      },
+      async ([job]) => {
+        if (!job?.data) return;
+        await handler({ id: job.id, data: job.data as QueuePayload });
+      },
+    );
   }
 
   async enqueue(
@@ -80,6 +112,9 @@ export class PgBossQueueService implements QueueService {
   }
 
   async cancel(queue: QueueName, jobId: string): Promise<QueueJobResult> {
+    const existing = await this.getStatus(queue, jobId);
+    if (!existing) throw new Error(`Unknown ${queue} job ${jobId}`);
+
     await this.boss.cancel(queue, jobId);
     const metadata = await this.database.jobMetadata.update({
       where: { jobId },
@@ -92,11 +127,15 @@ export class PgBossQueueService implements QueueService {
   }
 
   async retry(queue: QueueName, jobId: string): Promise<QueueJobResult> {
+    const existing = await this.getStatus(queue, jobId);
+    if (!existing) throw new Error(`Unknown ${queue} job ${jobId}`);
+
     await this.boss.retry(queue, jobId);
     const metadata = await this.database.jobMetadata.update({
       where: { jobId },
       data: {
         status: 'QUEUED',
+        startedAt: null,
         finishedAt: null,
         failureReason: null,
       },
@@ -129,6 +168,12 @@ export class PgBossQueueService implements QueueService {
   ): Promise<QueueJobResult> {
     const definition = this.definition(queue);
     const jobId = randomUUID();
+    const metadata = await this.reserveMetadata(queue, payload.workspaceId, jobId, options?.idempotencyKey);
+
+    if (metadata.jobId !== jobId) {
+      return this.toResult(metadata);
+    }
+
     const data = { ...payload, jobId };
     const sendOptions: Record<string, unknown> = {
       id: jobId,
@@ -142,48 +187,46 @@ export class PgBossQueueService implements QueueService {
       ...(startAfter ? { startAfter } : {}),
     };
 
-    const acceptedJobId = await this.boss.send(queue, data, sendOptions);
-    if (!acceptedJobId) {
-      return this.resolveDuplicate(queue, options?.idempotencyKey);
-    }
-
     try {
-      const metadata = await this.database.jobMetadata.create({
-        data: {
-          jobId: acceptedJobId,
-          queue,
-          workspaceId: payload.workspaceId,
-          status: 'QUEUED',
-        },
-      });
+      const acceptedJobId = await this.boss.send(queue, data, sendOptions);
+      if (!acceptedJobId) {
+        throw new Error(`pg-boss rejected ${queue} job ${jobId}`);
+      }
+      if (acceptedJobId !== jobId) {
+        throw new Error(`pg-boss returned unexpected job id ${acceptedJobId} for ${jobId}`);
+      }
       return this.toResult(metadata);
     } catch (error) {
-      await this.boss.cancel(queue, acceptedJobId).catch(() => undefined);
+      await this.database.jobMetadata.delete({ where: { jobId } }).catch(() => undefined);
       throw error;
     }
   }
 
-  private async resolveDuplicate(
+  private async reserveMetadata(
     queue: QueueName,
-    idempotencyKey: string | undefined,
-  ): Promise<QueueJobResult> {
-    if (!idempotencyKey) {
-      throw new Error(`pg-boss rejected ${queue} job without an idempotency key`);
+    workspaceId: string,
+    jobId: string,
+    idempotencyKey?: string,
+  ): Promise<NonNullable<JobMetadataRecord>> {
+    try {
+      return await this.database.jobMetadata.create({
+        data: {
+          jobId,
+          queue,
+          workspaceId,
+          idempotencyKey,
+          status: 'QUEUED',
+        },
+      });
+    } catch (error) {
+      if (idempotencyKey) {
+        const existing = await this.database.jobMetadata.findFirst({
+          where: { queue, workspaceId, idempotencyKey },
+        });
+        if (existing) return existing;
+      }
+      throw error;
     }
-
-    const [existingJob] = await this.boss.findJobs(queue, { key: idempotencyKey });
-    if (!existingJob) {
-      throw new Error(`Unable to resolve duplicate ${queue} job for ${idempotencyKey}`);
-    }
-
-    const metadata = await this.database.jobMetadata.findUnique({
-      where: { jobId: existingJob.id },
-    });
-    if (!metadata) {
-      throw new Error(`Missing metadata for duplicate job ${existingJob.id}`);
-    }
-
-    return this.toResult(metadata);
   }
 
   private definition(queue: QueueName): QueueDefinition {
@@ -197,6 +240,7 @@ export class PgBossQueueService implements QueueService {
   private queueOptions(definition: QueueDefinition): Record<string, unknown> {
     return {
       policy: 'standard',
+      notify: true,
       retryLimit: definition.retryLimit,
       retryDelay: definition.retryDelay,
       retryBackoff: definition.retryBackoff,
