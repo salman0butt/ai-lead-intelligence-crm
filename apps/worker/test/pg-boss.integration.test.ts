@@ -98,7 +98,7 @@ integration('pg-boss PostgreSQL integration', () => {
         idempotencyKey: `retry:${randomUUID()}`,
         retryLimit: 2,
         retryDelay: 1,
-        retryBackoff: false,
+        retryBackoff: true,
       },
     );
 
@@ -129,7 +129,7 @@ integration('pg-boss PostgreSQL integration', () => {
         idempotencyKey: `failure:${randomUUID()}`,
         retryLimit: 1,
         retryDelay: 1,
-        retryBackoff: false,
+        retryBackoff: true,
       },
     );
 
