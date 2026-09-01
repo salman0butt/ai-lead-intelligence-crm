@@ -214,8 +214,8 @@ export class PgBossQueueService implements QueueService {
           jobId,
           queue,
           workspaceId,
-          idempotencyKey,
           status: 'QUEUED',
+          ...(idempotencyKey ? { idempotencyKey } : {}),
         },
       });
     } catch (error) {
