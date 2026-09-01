@@ -13,6 +13,6 @@ export async function registerJobWorkers(
     await processSystemTestJob(database, job, systemTestTask);
   });
   await queue.work('campaign-plan', async (job) => {
-    await processCampaignPlanJob(database, job, campaignPlanTask);
+    await processCampaignPlanJob(database, queue, job, campaignPlanTask);
   });
 }
