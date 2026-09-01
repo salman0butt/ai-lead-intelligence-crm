@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createPrismaClient, type DatabaseClient } from '@ai-crm/database';
+import { CampaignStatus, createPrismaClient, type DatabaseClient } from '@ai-crm/database';
 import { PgBossQueueService } from '@ai-crm/queue';
 import { processCampaignPlanJob } from '../src/campaign-plan.processor.js';
 import { processSystemTestJob } from '../src/system-test.processor.js';
@@ -26,12 +26,24 @@ async function waitForJob(
 integration('pg-boss PostgreSQL integration', () => {
   let database: DatabaseClient;
   let workspaceId: string;
+  let userId: string;
 
   beforeAll(async () => {
     database = createPrismaClient(databaseUrl!);
     await database.$connect();
+
+    const suffix = randomUUID();
+    const user = await database.user.create({
+      data: {
+        email: `worker-integration-${suffix}@example.com`,
+        passwordHash: 'integration-test-hash',
+        name: 'Worker Integration User',
+      },
+    });
+    userId = user.id;
+
     const workspace = await database.workspace.create({
-      data: { name: `M1 Integration ${randomUUID()}` },
+      data: { name: `Worker Integration ${suffix}` },
     });
     workspaceId = workspace.id;
   });
@@ -39,6 +51,9 @@ integration('pg-boss PostgreSQL integration', () => {
   afterAll(async () => {
     if (workspaceId) {
       await database.workspace.delete({ where: { id: workspaceId } }).catch(() => undefined);
+    }
+    if (userId) {
+      await database.user.delete({ where: { id: userId } }).catch(() => undefined);
     }
     await database.$disconnect();
   });
@@ -64,31 +79,38 @@ integration('pg-boss PostgreSQL integration', () => {
     await worker.stop();
   }, 30_000);
 
-  it('hands campaign planning from a stopped producer to an independent worker using identifiers only', async () => {
-    const campaignId = randomUUID();
+  it('hands campaign planning from a stopped producer to an independent worker and persists search space', async () => {
+    const campaign = await database.campaign.create({
+      data: {
+        workspaceId,
+        createdByUserId: userId,
+        name: `US Dentists ${randomUUID()}`,
+        country: 'United States',
+        niche: 'Dentist',
+        requestedLeadCount: 10_000,
+        status: CampaignStatus.PLANNING,
+      },
+    });
+
     const producer = new PgBossQueueService(databaseUrl!, database);
     await producer.start();
     const queued = await producer.enqueue(
       'campaign-plan',
-      { workspaceId, campaignId },
-      { idempotencyKey: `campaign-plan:${campaignId}`, retryLimit: 0 },
+      { workspaceId, campaignId: campaign.id },
+      { idempotencyKey: `campaign-plan:${campaign.id}`, retryLimit: 0 },
     );
     await producer.stop();
 
-    const receivedPayloads: Array<Record<string, string>> = [];
     const worker = new PgBossQueueService(databaseUrl!, database);
     await worker.start();
-    await worker.work('campaign-plan', async (job) =>
-      processCampaignPlanJob(database, job, async (payload) => {
-        receivedPayloads.push({ ...payload });
-      }),
-    );
+    await worker.work('campaign-plan', async (job) => processCampaignPlanJob(database, job));
 
     const completed = await waitForJob(database, queued.jobId, (job) => job.status === 'COMPLETED');
     expect(completed.attempts).toBe(1);
-    expect(receivedPayloads).toHaveLength(1);
-    expect(receivedPayloads[0]).toMatchObject({ jobId: queued.jobId, workspaceId, campaignId });
-    expect(Object.keys(receivedPayloads[0]!).sort()).toEqual(['campaignId', 'jobId', 'workspaceId']);
+    await expect(database.searchPlan.count({ where: { campaignId: campaign.id } })).resolves.toBe(1);
+    await expect(
+      database.searchTask.count({ where: { searchPlan: { campaignId: campaign.id } } }),
+    ).resolves.toBeGreaterThan(7);
 
     await worker.stop();
   }, 30_000);
