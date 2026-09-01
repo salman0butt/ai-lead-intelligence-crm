@@ -115,6 +115,9 @@ importers:
       '@ai-crm/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@ai-crm/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
       '@ai-crm/queue':
         specifier: workspace:*
         version: link:../../packages/queue
