@@ -53,17 +53,29 @@ describe('JobsService', () => {
     expect(queue.enqueue).not.toHaveBeenCalled();
   });
 
-  it('enqueues system-test for a member with deterministic generated idempotency', async () => {
+  it('generates a fresh idempotency key when the client omits one', async () => {
     const db = createDb(true);
     const queue = createQueue();
     const service = new JobsService(db as never, queue as never);
 
     await service.enqueueTest(userId, { workspaceId });
 
+    const options = queue.enqueue.mock.calls[0]?.[2] as { idempotencyKey?: string } | undefined;
+    expect(queue.enqueue).toHaveBeenCalledWith('system-test', { workspaceId }, expect.any(Object));
+    expect(options?.idempotencyKey).toMatch(/^system-test:[0-9a-f-]{36}$/);
+  });
+
+  it('preserves an explicit idempotency key for retry-safe scheduling', async () => {
+    const db = createDb(true);
+    const queue = createQueue();
+    const service = new JobsService(db as never, queue as never);
+
+    await service.enqueueTest(userId, { workspaceId, idempotencyKey: 'client-request-1' });
+
     expect(queue.enqueue).toHaveBeenCalledWith(
       'system-test',
       { workspaceId },
-      { idempotencyKey: `system-test:${workspaceId}:${userId}` },
+      { idempotencyKey: 'client-request-1' },
     );
   });
 
