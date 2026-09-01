@@ -135,15 +135,15 @@ export async function processBusinessDiscoveryJob(
       };
 
       if (payloadPage === 1) {
-        if (persisted.nextPageToken) {
-          throw new Error('campaign-discovery first page unexpectedly has a persisted page token');
+        if (persisted.continuationCursor) {
+          throw new Error('campaign-discovery first page unexpectedly has a persisted continuation cursor');
         }
         page = await provider.searchBusinesses(input);
       } else {
-        if (!persisted.nextPageToken) {
-          throw new Error('campaign-discovery next page requires a persisted page token');
+        if (!persisted.continuationCursor) {
+          throw new Error('campaign-discovery continuation requires a persisted cursor');
         }
-        page = await provider.getNextPage(input, persisted.nextPageToken);
+        page = await provider.continueSearch(input, persisted.continuationCursor);
       }
 
       normalized = page.results.map((raw) => ({
@@ -162,7 +162,7 @@ export async function processBusinessDiscoveryJob(
       throw error;
     }
 
-    const nextPageToken = page.nextPageToken?.trim() || null;
+    const nextCursor = page.nextCursor?.trim() || null;
     let newProvenanceCount = 0;
 
     try {
@@ -219,11 +219,11 @@ export async function processBusinessDiscoveryJob(
             pageNumber: payloadPage,
           },
           data: {
-            status: nextPageToken ? SearchTaskStatus.PENDING : SearchTaskStatus.COMPLETED,
+            status: nextCursor ? SearchTaskStatus.PENDING : SearchTaskStatus.COMPLETED,
             resultCount: { increment: page.results.length },
             uniqueBusinessCount: { increment: newProvenanceCount },
-            nextPageToken,
-            pageNumber: nextPageToken ? payloadPage + 1 : payloadPage,
+            continuationCursor: nextCursor,
+            pageNumber: nextCursor ? payloadPage + 1 : payloadPage,
           },
         });
         if (updatedTask.count !== 1) {
@@ -245,7 +245,7 @@ export async function processBusinessDiscoveryJob(
       throw error;
     }
 
-    if (nextPageToken) {
+    if (nextCursor) {
       await scheduleSearchTaskDiscovery(queue, {
         workspaceId: payload.workspaceId,
         campaignId: payload.campaignId,
