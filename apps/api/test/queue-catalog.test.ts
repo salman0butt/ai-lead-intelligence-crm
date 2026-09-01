@@ -16,6 +16,7 @@ describe('milestone 1 queue catalog', () => {
     expect(queueDefinitions).toHaveLength(APPLICATION_QUEUES.length);
 
     for (const queue of queueDefinitions) {
+      expect(queue.concurrency).toBeGreaterThanOrEqual(1);
       expect(queue.retryLimit).toBe(3);
       expect(queue.retryDelay).toBe(5);
       expect(queue.retryBackoff).toBe(true);
