@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { registerJobWorkers } from '../src/job-worker.js';
 
-const work = vi.fn(async (_queue: string, _handler: unknown) => 'worker-id');
+const work = vi.fn(async (queue: string, handler: unknown) => {
+  void queue;
+  void handler;
+  return 'worker-id';
+});
 
 function createDatabase() {
   return {
