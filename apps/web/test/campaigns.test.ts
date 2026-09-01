@@ -11,6 +11,7 @@ describe('campaign frontend helpers', () => {
   it('shows only lifecycle actions valid for the current status', () => {
     expect(getCampaignActions('DRAFT')).toEqual(['start', 'cancel']);
     expect(getCampaignActions('PLANNING')).toEqual(['pause', 'cancel']);
+    expect(getCampaignActions('DISCOVERING')).toEqual(['pause', 'cancel']);
     expect(getCampaignActions('PAUSED')).toEqual(['resume', 'cancel']);
     expect(getCampaignActions('CANCELLED')).toEqual([]);
   });
