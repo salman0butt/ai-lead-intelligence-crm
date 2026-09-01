@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": { "@ai-crm/config": "workspace:*", "@ai-crm/database": "workspace:*" },
-  "devDependencies": { "typescript": "^6.0.3", "vitest": "^4.1.11" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" }
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^6.0.3", "vitest": "^4.1.11" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit", "build": "tsc -p tsconfig.build.json", "start": "node dist/main.js" }
 }

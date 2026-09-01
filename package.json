@@ -4,9 +4,21 @@
   "packageManager": "pnpm@11.24.0",
   "engines": { "node": ">=24" },
   "scripts": {
+    "pretest": "pnpm --filter @ai-crm/database prisma:generate",
     "test": "pnpm -r --if-present test",
+    "pretypecheck": "pnpm --filter @ai-crm/database prisma:generate",
     "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "pnpm -r --if-present lint",
-    "build": "pnpm -r --if-present build"
+    "lint": "eslint . --max-warnings=0",
+    "prebuild": "pnpm --filter @ai-crm/database prisma:generate",
+    "build": "pnpm -r --if-present build",
+    "db:generate": "pnpm --filter @ai-crm/database prisma:generate",
+    "db:validate": "pnpm --filter @ai-crm/database prisma:validate",
+    "db:migrate": "pnpm --filter @ai-crm/database prisma:migrate:dev",
+    "db:deploy": "pnpm --filter @ai-crm/database prisma:migrate:deploy"
+  },
+  "devDependencies": {
+    "eslint": "^10.9.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
   }
 }

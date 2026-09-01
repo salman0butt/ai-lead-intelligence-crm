@@ -9,10 +9,11 @@
     "@ai-crm/schemas": "workspace:*",
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
+    "@nestjs/platform-express": "^12.0.1",
     "argon2": "^0.45.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
-  "devDependencies": { "typescript": "^6.0.3", "vitest": "^4.1.11" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" }
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^6.0.3", "vitest": "^4.1.11" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit", "build": "tsc -p tsconfig.build.json", "start": "node dist/main.js" }
 }
