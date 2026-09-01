@@ -1,8 +1,12 @@
 ALTER TYPE "public"."CampaignStatus" ADD VALUE 'DISCOVERING';
 
 ALTER TABLE "public"."SearchTask"
-  ADD COLUMN "nextPageToken" TEXT,
+  ADD COLUMN "continuationCursor" TEXT,
   ADD COLUMN "pageNumber" INTEGER NOT NULL DEFAULT 1;
+
+UPDATE "public"."SearchTask"
+SET "provider" = 'google-maps-browser'
+WHERE "provider" = 'google-places';
 
 CREATE TABLE "public"."BusinessCandidate" (
   "id" UUID NOT NULL,
