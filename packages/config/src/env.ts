@@ -11,6 +11,7 @@ export const serverEnvSchema = z.object({
   API_URL: z.url(),
   NODE_ENV: z.enum(['development', 'test', 'production']),
   OPENAI_API_KEY: optionalSecret,
+  GOOGLE_PLACES_API_KEY: optionalSecret,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
