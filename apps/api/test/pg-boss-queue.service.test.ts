@@ -23,9 +23,9 @@ function createDatabase(existing = metadata()) {
     updates,
     client: {
       jobMetadata: {
-        create: async ({ data }: { data: unknown }) => {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
           creates.push(data);
-          return existing;
+          return { ...existing, ...data };
         },
         findUnique: async () => existing,
         update: async ({ data }: { data: unknown }) => {
