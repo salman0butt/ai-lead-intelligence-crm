@@ -1,20 +1,82 @@
-name: ci-red
+name: ci
 
 on:
   push:
-    branches: [feat/milestone-0-foundation]
+    branches: [main, feat/milestone-0-foundation]
   pull_request:
 
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_lead_crm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ai_lead_crm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ai_lead_crm?schema=public
+      APP_URL: http://localhost:3000
+      API_URL: http://localhost:4000
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NODE_ENV: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm test
+          package-manager-cache: false
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Validate Prisma schema
+        run: pnpm db:validate
+      - name: Apply database migrations
+        run: pnpm db:deploy
+      - name: Run tests
+        run: pnpm test
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Build
+        run: pnpm build
+      - name: Smoke test compiled applications
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @ai-crm/api start > /tmp/api.log 2>&1 & API_PID=$!
+          pnpm --filter @ai-crm/worker start > /tmp/worker.log 2>&1 & WORKER_PID=$!
+          pnpm --filter @ai-crm/web start > /tmp/web.log 2>&1 & WEB_PID=$!
+          cleanup() {
+            kill "$API_PID" "$WORKER_PID" "$WEB_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4000/health >/tmp/api-health.json; then break; fi
+            sleep 1
+          done
+          grep -q '"status":"ok"' /tmp/api-health.json
+
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/login >/tmp/web-login.html; then break; fi
+            sleep 1
+          done
+          grep -q 'AI Lead Intelligence CRM' /tmp/web-login.html
+
+          for attempt in {1..15}; do
+            if grep -q 'worker ready' /tmp/worker.log; then break; fi
+            sleep 1
+          done
+          grep -q 'worker ready' /tmp/worker.log
