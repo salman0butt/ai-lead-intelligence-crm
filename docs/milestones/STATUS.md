@@ -38,7 +38,7 @@ The M4 discovery transaction now canonicalizes every newly persisted candidate a
 
 M5 intentionally does not discover or verify official domains, visit websites, crawl pages, enrich contacts, run website audits, perform AI research, score leads, or add CRM/outreach behavior. Official domain resolution and verification begins in M6.
 
-M5 implementation and regression verification passed the complete PR CI gate, including clean Prisma migration application, all package/unit/integration/browser/queue tests, typecheck, lint, build, and compiled application smoke tests. PR #6 is the milestone integration PR; after merge, the merge-triggered `main` CI is the final repository-level confirmation.
+M5 implementation and regression verification passed the complete PR CI gate, including clean Prisma migration application, all package/unit/integration/browser/queue tests, typecheck, lint, build, and compiled application smoke tests. PR #7 is the final milestone integration PR; it replaces draft PR #6 only because the connector's draft-to-ready mutation failed. After merge, the merge-triggered `main` CI is the final repository-level confirmation.
 
 ## Milestone 4 completion
 
