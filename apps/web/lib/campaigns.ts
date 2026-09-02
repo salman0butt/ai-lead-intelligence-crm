@@ -1,4 +1,4 @@
-export type CampaignStatus = 'DRAFT' | 'PLANNING' | 'PAUSED' | 'CANCELLED';
+export type CampaignStatus = 'DRAFT' | 'PLANNING' | 'DISCOVERING' | 'PAUSED' | 'CANCELLED';
 export type CampaignLifecycleAction = 'start' | 'pause' | 'resume' | 'cancel';
 
 export interface CampaignResponse {
@@ -25,6 +25,7 @@ export interface CampaignGeography {
 const actionsByStatus: Record<CampaignStatus, readonly CampaignLifecycleAction[]> = {
   DRAFT: ['start', 'cancel'],
   PLANNING: ['pause', 'cancel'],
+  DISCOVERING: ['pause', 'cancel'],
   PAUSED: ['resume', 'cancel'],
   CANCELLED: [],
 };

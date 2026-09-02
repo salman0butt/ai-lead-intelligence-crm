@@ -60,7 +60,7 @@ integration('search planner integration', () => {
     return campaign;
   }
 
-  it('creates many smaller tasks and preserves completed task state across planner replay', async () => {
+  it('creates browser discovery tasks and preserves completed task state across planner replay', async () => {
     const campaign = await createCampaign(CampaignStatus.PLANNING);
 
     const first = await planCampaignSearch(database, {
@@ -79,7 +79,7 @@ integration('search planner integration', () => {
       orderBy: { id: 'asc' },
     });
     expect(tasks).toHaveLength(first.generatedTaskCount);
-    expect(tasks.every((task) => task.provider === 'google-places')).toBe(true);
+    expect(new Set(tasks.map((task) => task.provider))).toEqual(new Set(['google-maps-browser']));
     expect(tasks.every((task) => task.status === SearchTaskStatus.PENDING)).toBe(true);
     expect(tasks.every((task) => task.attemptCount === 0)).toBe(true);
     expect(tasks.every((task) => task.resultCount === 0)).toBe(true);

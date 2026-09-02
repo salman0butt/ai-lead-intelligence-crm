@@ -6,6 +6,7 @@
   "dependencies": {
     "@ai-crm/config": "workspace:*",
     "@ai-crm/database": "workspace:*",
+    "@ai-crm/discovery": "workspace:*",
     "@ai-crm/queue": "workspace:*"
   },
   "devDependencies": { "@types/node": "^24.0.0", "typescript": "^6.0.3", "vitest": "^4.1.11" },

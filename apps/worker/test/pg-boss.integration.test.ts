@@ -79,7 +79,7 @@ integration('pg-boss PostgreSQL integration', () => {
     await worker.stop();
   }, 30_000);
 
-  it('hands campaign planning from a stopped producer to an independent worker and persists search space', async () => {
+  it('hands campaign planning from a stopped producer to an independent worker and durably schedules discovery', async () => {
     const campaign = await database.campaign.create({
       data: {
         workspaceId,
@@ -97,20 +97,36 @@ integration('pg-boss PostgreSQL integration', () => {
     const queued = await producer.enqueue(
       'campaign-plan',
       { workspaceId, campaignId: campaign.id },
-      { idempotencyKey: `campaign-plan:${campaign.id}`, retryLimit: 0 },
+      {
+        idempotencyKey: `campaign-plan:${campaign.id}:${campaign.updatedAt.toISOString()}`,
+        retryLimit: 0,
+      },
     );
     await producer.stop();
 
     const worker = new PgBossQueueService(databaseUrl!, database);
     await worker.start();
-    await worker.work('campaign-plan', async (job) => processCampaignPlanJob(database, job));
+    await worker.work('campaign-plan', async (job) => processCampaignPlanJob(database, worker, job));
 
     const completed = await waitForJob(database, queued.jobId, (job) => job.status === 'COMPLETED');
     expect(completed.attempts).toBe(1);
     await expect(database.searchPlan.count({ where: { campaignId: campaign.id } })).resolves.toBe(1);
-    await expect(
-      database.searchTask.count({ where: { searchPlan: { campaignId: campaign.id } } }),
-    ).resolves.toBeGreaterThan(7);
+
+    const taskCount = await database.searchTask.count({
+      where: { searchPlan: { campaignId: campaign.id } },
+    });
+    expect(taskCount).toBeGreaterThan(7);
+
+    const discoveredCampaign = await database.campaign.findUniqueOrThrow({
+      where: { id: campaign.id },
+    });
+    expect(discoveredCampaign.status).toBe(CampaignStatus.DISCOVERING);
+
+    const discoveryJobs = await database.jobMetadata.findMany({
+      where: { queue: 'campaign-discovery', workspaceId },
+    });
+    expect(discoveryJobs).toHaveLength(taskCount);
+    expect(discoveryJobs.every((job) => job.status === 'QUEUED')).toBe(true);
 
     await worker.stop();
   }, 30_000);

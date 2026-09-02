@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, feat/milestone-0-foundation, feat/milestone-1-postgres-job-system, feat/milestone-2-campaign-management, feat/milestone-3-search-planner]
+    branches: [main, feat/milestone-0-foundation, feat/milestone-1-postgres-job-system, feat/milestone-2-campaign-management, feat/milestone-3-search-planner, feat/milestone-4-business-discovery]
   pull_request:
 
 jobs:
@@ -39,6 +39,8 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: pnpm --filter @ai-crm/discovery exec playwright install --with-deps chromium
       - name: Validate Prisma schema
         run: pnpm db:validate
       - name: Apply database migrations

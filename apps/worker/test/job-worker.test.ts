@@ -16,11 +16,19 @@ function createDatabase() {
 }
 
 describe('registerJobWorkers', () => {
-  it('registers system-test and campaign-plan consumers', async () => {
+  it('registers system-test, campaign-plan, and campaign-discovery consumers', async () => {
     work.mockClear();
 
-    await registerJobWorkers(createDatabase() as never, { work } as never);
+    await registerJobWorkers(
+      createDatabase() as never,
+      { work } as never,
+      { get: vi.fn() } as never,
+    );
 
-    expect(work.mock.calls.map(([queue]) => queue)).toEqual(['system-test', 'campaign-plan']);
+    expect(work.mock.calls.map(([queue]) => queue)).toEqual([
+      'system-test',
+      'campaign-plan',
+      'campaign-discovery',
+    ]);
   });
 });
