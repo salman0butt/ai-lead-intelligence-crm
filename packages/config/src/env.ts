@@ -5,12 +5,18 @@ const optionalSecret = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const optionalString = z.preprocess(
+  (value) => (value === '' || value === null ? undefined : value),
+  z.string().min(1).optional(),
+);
+
 export const serverEnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   APP_URL: z.url(),
   API_URL: z.url(),
   NODE_ENV: z.enum(['development', 'test', 'production']),
   OPENAI_API_KEY: optionalSecret,
+  DISCOVERY_AI_MODEL: optionalString,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
