@@ -14,7 +14,19 @@ describe('loadServerEnv', () => {
 
     expect(env.NODE_ENV).toBe('test');
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.DISCOVERY_AI_MODEL).toBeUndefined();
     expect(env).not.toHaveProperty('GOOGLE_PLACES_API_KEY');
+  });
+
+  it('accepts an optional discovery AI fallback model without requiring it', () => {
+    const env = loadServerEnv({
+      ...requiredEnv,
+      OPENAI_API_KEY: 'test-key',
+      DISCOVERY_AI_MODEL: 'gpt-5.6-sol',
+    });
+
+    expect(env.OPENAI_API_KEY).toBe('test-key');
+    expect(env.DISCOVERY_AI_MODEL).toBe('gpt-5.6-sol');
   });
 
   it('ignores obsolete Google Places credentials because browser discovery does not use them', () => {
