@@ -8,8 +8,8 @@ This ledger tracks the ordered implementation roadmap for AI Lead Intelligence C
 | M1 | Durable PostgreSQL Job System | Complete |
 | M2 | Campaign Management | Complete |
 | M3 | Search Planner | Complete |
-| M4 | Browser Business Discovery | Current candidate — implementation complete, pending final review/PR/merge/main CI |
-| M5 | Deduplication Engine | Remaining |
+| M4 | Browser Business Discovery | Complete |
+| M5 | Deduplication Engine | Next |
 | M6 | Domain Resolution & Website Verification | Remaining |
 | M7 | Website Crawler | Remaining |
 | M8 | Contact Enrichment | Remaining |
@@ -30,10 +30,10 @@ This ledger tracks the ordered implementation roadmap for AI Lead Intelligence C
 | M23 | Performance & Scale Validation | Remaining |
 | M24 | Future Features | Remaining |
 
-## Current boundary
+## Milestone 4 completion
 
 M4 delivers real browser-based public business discovery behind a provider-neutral package, normalized candidates and source provenance, provider usage accounting, durable cursor/page continuation, crash-safe next-page scheduling repair, stale-generation protection for pause/resume/cancel, bounded browser concurrency, deterministic real-Chromium fixture tests, and an optional fail-closed AI page classifier.
 
-M4 does not include canonical cross-source deduplication, domain resolution, crawling, enrichment, website audits, AI research, lead scoring, CRM/outreach, or autonomous campaign behavior. Those remain in M5+ in the roadmap order above.
+M4 intentionally does not include canonical cross-source deduplication, domain resolution, crawling, enrichment, website audits, AI research, lead scoring, CRM/outreach, or autonomous campaign behavior. Those remain in M5+ in the roadmap order above.
 
-M4 is not marked **Complete** until the exact reviewed head passes branch CI, PR CI passes on that same head, the PR is squash-merged with an expected-head guard, and the merge-triggered `main` CI passes every required gate.
+M4 was reviewed and verified on PR #5, squash-merged with an expected-head guard, and the merge-triggered `main` workflow passed all required verification gates. Milestone 5 — Deduplication Engine — is next.
