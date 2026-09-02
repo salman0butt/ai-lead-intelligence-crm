@@ -7,3 +7,7 @@ export function createPrismaClient(databaseUrl: string): PrismaClient {
 }
 
 export type DatabaseClient = ReturnType<typeof createPrismaClient>;
+export type DatabaseTransactionClient = Omit<
+  DatabaseClient,
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$extends'
+>;
