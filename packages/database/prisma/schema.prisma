@@ -37,6 +37,17 @@ enum SearchTaskStatus {
   CANCELLED
 }
 
+enum DuplicateReason {
+  PROVIDER_EXTERNAL_ID
+  CANONICAL_DOMAIN
+  PHONE
+  NAME_ADDRESS_EXACT
+  NAME_CITY_POSTAL_EXACT
+  FUZZY_HIGH_CONFIDENCE
+  FUZZY_LOW_CONFIDENCE_NOT_MERGED
+  NEW_CANONICAL
+}
+
 model User {
   id               String            @id @default(uuid()) @db.Uuid
   email            String            @unique @db.VarChar(320)
@@ -56,6 +67,7 @@ model Workspace {
   jobs               JobMetadata[]
   campaigns          Campaign[]
   searchPlans        SearchPlan[]
+  businesses         Business[]
   businessCandidates BusinessCandidate[]
   providerUsages     ProviderUsage[]
   createdAt          DateTime            @default(now())
@@ -164,27 +176,64 @@ model SearchTask {
   @@index([searchPlanId, status])
 }
 
+model Business {
+  id                   String              @id @default(uuid()) @db.Uuid
+  workspaceId          String              @db.Uuid
+  name                 String              @db.VarChar(240)
+  normalizedName       String              @db.VarChar(240)
+  formattedAddress     String
+  normalizedAddress    String
+  city                 String?             @db.VarChar(120)
+  normalizedCity       String?             @db.VarChar(120)
+  postalCode           String?             @db.VarChar(40)
+  normalizedPostalCode String?             @db.VarChar(40)
+  phone                String?             @db.VarChar(64)
+  normalizedPhone      String?             @db.VarChar(64)
+  canonicalDomain      String?             @db.VarChar(253)
+  workspace            Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  candidates           BusinessCandidate[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([workspaceId, canonicalDomain])
+  @@index([workspaceId, normalizedPhone])
+  @@index([workspaceId, normalizedName, normalizedAddress])
+  @@index([workspaceId, normalizedName, normalizedCity, normalizedPostalCode])
+  @@index([workspaceId, normalizedCity])
+  @@index([workspaceId, normalizedPostalCode])
+}
+
 model BusinessCandidate {
-  id                 String           @id @default(uuid()) @db.Uuid
-  workspaceId        String           @db.Uuid
-  campaignId         String           @db.Uuid
-  provider           String           @db.VarChar(80)
-  providerExternalId String           @db.VarChar(255)
-  name               String           @db.VarChar(240)
-  formattedAddress   String
-  category           String?          @db.VarChar(160)
-  latitude           Float?
-  longitude          Float?
-  rawReference       String?          @db.VarChar(500)
-  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  campaign           Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  sources            BusinessSource[]
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  id                  String           @id @default(uuid()) @db.Uuid
+  workspaceId         String           @db.Uuid
+  campaignId          String           @db.Uuid
+  provider            String           @db.VarChar(80)
+  providerExternalId  String           @db.VarChar(255)
+  name                String           @db.VarChar(240)
+  formattedAddress    String
+  category            String?          @db.VarChar(160)
+  latitude            Float?
+  longitude           Float?
+  rawReference        String?          @db.VarChar(500)
+  city                String?          @db.VarChar(120)
+  postalCode          String?          @db.VarChar(40)
+  phone               String?          @db.VarChar(64)
+  canonicalDomain     String?          @db.VarChar(253)
+  matchedBusinessId   String?          @db.Uuid
+  duplicateConfidence Float?
+  duplicateReason     DuplicateReason?
+  workspace           Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign            Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  matchedBusiness     Business?        @relation(fields: [matchedBusinessId], references: [id], onDelete: SetNull)
+  sources             BusinessSource[]
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
 
   @@unique([campaignId, provider, providerExternalId])
   @@index([workspaceId, campaignId])
   @@index([campaignId, provider])
+  @@index([workspaceId, provider, providerExternalId])
+  @@index([matchedBusinessId])
 }
 
 model BusinessSource {

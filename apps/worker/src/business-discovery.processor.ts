@@ -9,6 +9,8 @@ import {
   type NormalizedBusiness,
 } from '@ai-crm/discovery';
 import type { QueuePayload, QueueService, QueueWorkJob } from '@ai-crm/queue';
+import { canonicalizeBusinessCandidate } from './deduplication/business-canonicalizer.js';
+import { acquireWorkspaceCanonicalizationLock } from './deduplication/workspace-lock.js';
 import { scheduleSearchTaskDiscovery } from './discovery-scheduler.js';
 import { processTrackedJob } from './tracked-job.js';
 
@@ -179,6 +181,8 @@ export async function processBusinessDiscoveryJob(
 
     try {
       await database.$transaction(async (tx) => {
+        await acquireWorkspaceCanonicalizationLock(tx, payload.workspaceId);
+
         for (const result of normalized) {
           const business = result.business;
           const candidate = await tx.businessCandidate.upsert({
@@ -210,6 +214,8 @@ export async function processBusinessDiscoveryJob(
               rawReference: business.rawReference,
             },
           });
+
+          await canonicalizeBusinessCandidate(tx, candidate.id);
 
           const source = await tx.businessSource.createMany({
             data: [{

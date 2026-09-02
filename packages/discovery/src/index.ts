@@ -28,6 +28,32 @@ export type {
   BrowserPageSnapshot,
 } from './browser/page-interpreter.js';
 export { ConcurrencyLimitedDiscoveryProvider } from './concurrency-limited-provider.js';
+export {
+  canAutoMergeFuzzy,
+  FUZZY_ADDRESS_MIN,
+  FUZZY_AMBIGUITY_MARGIN,
+  FUZZY_AUTO_MERGE_SCORE,
+  FUZZY_LOW_CONFIDENCE_MIN,
+  FUZZY_NAME_MIN,
+  hasStrongIdentifierConflict,
+  scoreFuzzyMatch,
+} from './deduplication/match.js';
+export type {
+  FuzzyComparableIdentity,
+  FuzzyScore,
+} from './deduplication/match.js';
+export {
+  normalizeDomain,
+  normalizeIdentity,
+  normalizePhone,
+  normalizePostalCode,
+  normalizeText,
+} from './deduplication/normalize.js';
+export { editSimilarity, tokenJaccard } from './deduplication/similarity.js';
+export type {
+  BusinessIdentityInput,
+  NormalizedBusinessIdentity,
+} from './deduplication/types.js';
 export { DiscoveryProviderRegistry } from './provider-registry.js';
 export { DiscoveryProviderError } from './types.js';
 export type {
