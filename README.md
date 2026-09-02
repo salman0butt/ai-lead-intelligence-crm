@@ -2,7 +2,7 @@
 
 Autonomous AI Lead Intelligence & Sales CRM built as milestone-based production vertical slices.
 
-The current candidate is **Milestone 4 — Browser Business Discovery**. Milestones 0–3 provide authentication/tenancy, a durable PostgreSQL job system, campaign lifecycle management, and deterministic search planning. Milestone 4 adds real public-page business discovery through an isolated browser provider, durable cursor continuation, normalized candidate/provenance storage, provider usage accounting, bounded browser concurrency, pause/resume generation safety, and optional AI page classification.
+The current verified candidate is **Milestone 5 — Deduplication Engine**. Milestones 0–4 provide authentication/tenancy, a durable PostgreSQL job system, campaign lifecycle management, deterministic search planning, and browser-based business discovery. Milestone 5 adds workspace-scoped canonical businesses, deterministic layered deduplication, candidate match audit metadata, concurrency-safe canonical creation, atomic discovery canonicalization, and an idempotent backfill for candidates created before M5.
 
 ## Architecture
 
@@ -10,18 +10,18 @@ The current candidate is **Milestone 4 — Browser Business Discovery**. Milesto
 apps/
   web/       Next.js + React + TypeScript + Tailwind + TanStack Query
   api/       NestJS API, authentication, workspaces, campaigns, job scheduling/status
-  worker/    Independent pg-boss worker, planner, discovery orchestration
+  worker/    Independent pg-boss worker, planner, discovery + canonicalization orchestration
 
 packages/
   config/    Zod environment validation
   database/  Prisma + PostgreSQL models and migrations
-  discovery/ Provider-neutral discovery contract + browser implementation
+  discovery/ Provider-neutral discovery + deterministic deduplication primitives
   queue/     QueueService contract + pg-boss adapter
   schemas/   Shared request schemas
   shared/    Shared application types
 ```
 
-PostgreSQL remains the durable store for application state, discovery state, and pg-boss jobs. The initial architecture intentionally does **not** use Redis, BullMQ, RabbitMQ, Kafka, or Temporal.
+PostgreSQL remains the durable store for application state, discovery state, canonical businesses, and pg-boss jobs. The initial architecture intentionally does **not** use Redis, BullMQ, RabbitMQ, Kafka, or Temporal.
 
 ## Prerequisites
 
@@ -63,6 +63,7 @@ The web application is available at `http://localhost:3000` and the API at `http
 - Every registered user starts with a workspace and `OWNER` membership.
 - Workspace-scoped API operations authorize through `WorkspaceMember`.
 - Campaign planning and discovery validate both workspace and campaign/task relationships before executing work.
+- Canonical `Business` records and all M5 matching decisions are workspace-scoped; candidates from different workspaces are never linked to the same canonical row.
 
 ## Campaign lifecycle
 
@@ -147,7 +148,7 @@ If the public source presents a CAPTCHA, consent wall, or access block, discover
 
 ### Extraction and normalization
 
-Rendered listing cards are normalized into `BusinessCandidate` records with:
+Rendered listing cards are normalized into `BusinessCandidate` records with the M4 discovery identity/provenance fields:
 
 ```text
 workspaceId
@@ -162,9 +163,18 @@ longitude
 rawReference
 ```
 
-`BusinessSource` preserves provenance back to the `SearchTask` and raw provider result. A campaign-level uniqueness key on `(campaignId, provider, providerExternalId)` prevents the same provider business from creating duplicate candidates when multiple search tasks encounter it.
+M5 additionally provides nullable identity input slots for:
 
-Milestone 5 owns broader canonical cross-source deduplication; M4 intentionally does not implement it.
+```text
+city
+postalCode
+phone
+canonicalDomain
+```
+
+Current M4 browser candidates may leave those values null. M5 consumes them when present but does not discover or verify them.
+
+`BusinessSource` preserves provenance back to the `SearchTask` and raw provider result. A campaign-level uniqueness key on `(campaignId, provider, providerExternalId)` prevents the same provider business from creating duplicate candidates when multiple search tasks encounter it.
 
 ### Durable continuation
 
@@ -221,6 +231,115 @@ action timeout: 1..60000 ms
 
 Creating the worker/provider registry does not launch Chromium. A browser session is opened only when an eligible current-generation discovery job actually executes.
 
+## Deduplication engine
+
+Milestone 5 turns raw campaign-scoped `BusinessCandidate` records into workspace-scoped canonical `Business` records. It is deterministic: there are no AI calls, embeddings, network requests, or new queues in the matching path.
+
+### Canonical business and candidate audit fields
+
+`Business` stores the canonical display identity plus normalized lookup fields:
+
+```text
+workspaceId
+name / normalizedName
+formattedAddress / normalizedAddress
+city / normalizedCity
+postalCode / normalizedPostalCode
+phone / normalizedPhone
+canonicalDomain
+```
+
+Every newly persisted M5 discovery candidate leaves its page transaction with:
+
+```text
+matchedBusinessId
+duplicateConfidence
+duplicateReason
+```
+
+`duplicateReason` is machine-readable and records one of:
+
+```text
+PROVIDER_EXTERNAL_ID
+CANONICAL_DOMAIN
+PHONE
+NAME_ADDRESS_EXACT
+NAME_CITY_POSTAL_EXACT
+FUZZY_HIGH_CONFIDENCE
+FUZZY_LOW_CONFIDENCE_NOT_MERGED
+NEW_CANONICAL
+```
+
+For a new canonical business, confidence is `0`. Exact duplicate rules use fixed confidence values, while fuzzy decisions persist the deterministic calculated score.
+
+### Matching order
+
+Canonicalization always stays inside one workspace and evaluates rules in this order:
+
+```text
+existing candidate association
+provider + providerExternalId
+canonical domain
+normalized phone
+normalized name + normalized address
+normalized name + normalized city + normalized postal code
+cautious fuzzy fallback
+new canonical Business
+```
+
+Exact matching never chooses an arbitrary row when multiple eligible canonical businesses satisfy a rule. Ambiguous exact results continue to later rules and create a new canonical business if no later rule resolves the candidate uniquely.
+
+For secondary exact and fuzzy rules, conflicting non-null strong identifiers such as different normalized phones or domains veto the weaker merge.
+
+### Conservative fuzzy fallback
+
+Fuzzy matching only runs with geographic support: matching postal code first, otherwise matching city. It uses deterministic normalized edit similarity and token Jaccard scoring.
+
+An automatic fuzzy merge requires all of:
+
+```text
+overall score >= 0.93
+name similarity >= 0.90
+address similarity >= 0.88
+matching city or postal support
+best eligible score leads the second-best by >= 0.03
+```
+
+A rejected possible duplicate with score at least `0.80` receives its own canonical business and the reason `FUZZY_LOW_CONFIDENCE_NOT_MERGED`. This deliberately favors false negatives over false-positive merges.
+
+### Transaction and concurrency safety
+
+M5 extends the existing M4 page-persistence transaction. The order is:
+
+```text
+acquire workspace transaction-scoped advisory lock
+for each normalized provider result:
+  upsert BusinessCandidate
+  canonicalize candidate
+  persist BusinessSource provenance
+update SearchTask cursor/counters/state
+update ProviderUsage result count
+commit
+```
+
+Canonicalization failure rolls back candidate/source/task/result persistence for that page. It is not misclassified as a provider failure. PostgreSQL transaction-scoped advisory locking serializes canonical match/create decisions inside one workspace while leaving different workspaces independent.
+
+### Pre-M5 candidate backfill
+
+Candidates that existed before the M5 migration can be canonicalized with the local worker command after the worker has been built:
+
+```bash
+pnpm --filter @ai-crm/worker backfill:business-candidates
+```
+
+The backfill is restart-safe and idempotent. It processes unmatched candidates in stable workspace and candidate order, uses bounded workspace transactions (default batch size `100`), acquires the same workspace advisory lock, and calls the same canonicalizer used by live discovery. A second successful run has no remaining unmatched candidates to process.
+
+The command prints aggregate processed/matched counts only. It does not enqueue pg-boss work or make provider/network requests.
+
+### M6 domain boundary
+
+M5 may compare `canonicalDomain` when another trusted part of the system has supplied that value. It **does not** discover, visit, resolve, or verify an official website. **Milestone 6 — Domain Resolution & Website Verification** owns that behavior.
+
 ## Optional AI page interpretation
 
 Rendered deterministic extraction is always the primary path. AI is optional and is only composed when both variables are present:
@@ -234,7 +353,7 @@ The interpreter receives a small sanitized snapshot containing only bounded page
 
 AI is **not** allowed to click, invent selectors, control the browser, solve challenges, or bypass source restrictions. Unknown/ambiguous layouts fail closed.
 
-No AI key or model is required for normal browser discovery.
+No AI key or model is required for normal browser discovery or M5 deduplication.
 
 ## Queue system
 
@@ -252,7 +371,9 @@ outreach-generation
 
 Each has a dead-letter queue and centralized retry/backoff/concurrency/retention settings. Queue payloads contain identifiers and small control fields only; scraped content belongs in durable storage.
 
-`campaign-plan` persists/replays search space and schedules unfinished discovery tasks. `campaign-discovery` validates the current campaign generation, claims one task/page, invokes the configured discovery provider, persists candidates/provenance/counters/cursor transactionally, and schedules continuation when required.
+`campaign-plan` persists/replays search space and schedules unfinished discovery tasks. `campaign-discovery` validates the current campaign generation, claims one task/page, invokes the configured discovery provider, and persists candidate canonicalization, provenance, counters, cursor, and provider usage transactionally before scheduling continuation when required.
+
+M5 does not introduce another queue.
 
 ## Environment variables
 
@@ -287,7 +408,7 @@ OPENAI_API_KEY
 DISCOVERY_AI_MODEL
 ```
 
-There is no `GOOGLE_PLACES_API_KEY` requirement.
+There is no `GOOGLE_PLACES_API_KEY` requirement and M5 adds no external-service credential.
 
 ## Verification
 
@@ -297,13 +418,13 @@ Standard repository verification:
 pnpm verify
 ```
 
-CI additionally installs Playwright Chromium explicitly. The full M4 gate covers:
+CI additionally installs Playwright Chromium explicitly. The complete gate covers:
 
 - frozen pnpm install;
 - Playwright Chromium installation;
 - Prisma schema validation and all migrations;
-- unit tests;
-- PostgreSQL-backed worker/API integration tests;
+- deterministic deduplication unit tests;
+- PostgreSQL-backed canonicalization, backfill, worker, and API integration tests;
 - real Chromium local-fixture discovery tests;
 - pg-boss durability/retry integration tests;
 - typecheck;
@@ -326,8 +447,8 @@ It may discover rendered public businesses, or explicitly report that the source
 
 ## Current milestone boundary
 
-Milestone 4 ends at real business discovery, normalization/provenance, provider usage, durable browser continuation, generation safety, and browser runtime composition.
+Milestone 5 ends at deterministic workspace-scoped canonical business creation/reuse, candidate match audit fields, cautious fuzzy fallback, concurrency-safe atomic discovery canonicalization, and idempotent pre-M5 backfill.
 
-The next milestone is **Milestone 5 — Deduplication Engine**. Domain resolution, crawling, contact enrichment, website auditing, AI research, opportunity detection, lead scoring, CRM workflows, outreach, autonomous campaign policies, and AI Copilot behavior remain later milestones and are intentionally not implemented here.
+The next milestone is **Milestone 6 — Domain Resolution & Website Verification**. Website crawling, contact enrichment, website auditing, AI research, opportunity detection, lead scoring, CRM workflows, outreach, autonomous campaign policies, and AI Copilot behavior remain later milestones and are intentionally not implemented in M5.
 
 See `docs/milestones/STATUS.md` for the roadmap ledger.
