@@ -73,6 +73,18 @@ export async function processBusinessDiscoveryJob(
       throw new Error('campaign-discovery pageNumber must be a positive integer');
     }
     if (payloadPage < persisted.pageNumber) {
+      if (
+        persisted.status === SearchTaskStatus.PENDING
+        && persisted.continuationCursor
+      ) {
+        await scheduleSearchTaskDiscovery(queue, {
+          workspaceId: payload.workspaceId,
+          campaignId: payload.campaignId,
+          searchTaskId: persisted.id,
+          campaignVersion: payload.campaignVersion,
+          pageNumber: String(persisted.pageNumber),
+        });
+      }
       return;
     }
     if (payloadPage > persisted.pageNumber) {
