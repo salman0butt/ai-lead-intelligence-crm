@@ -6,6 +6,7 @@ import { DiscoveryAccessBlockedError } from '../src/browser/browser-errors.js';
 import { BrowserSessionFactory } from '../src/browser/browser-session.js';
 import { decodeGoogleMapsCursor } from '../src/browser/cursor.js';
 import { GoogleMapsBrowserProvider } from '../src/browser/google-maps-browser.provider.js';
+import { DiscoveryProviderError } from '../src/types.js';
 
 const searchInput = {
   query: 'Dentist',
@@ -21,16 +22,26 @@ describe('GoogleMapsBrowserProvider with real Chromium', () => {
   let origin: string;
   let resultsHtml: string;
   let blockedHtml: string;
+  let unknownLayoutHtml: string;
 
   beforeAll(async () => {
-    [resultsHtml, blockedHtml] = await Promise.all([
+    [resultsHtml, blockedHtml, unknownLayoutHtml] = await Promise.all([
       readFile(new URL('./fixtures/maps-results-page.html', import.meta.url), 'utf8'),
       readFile(new URL('./fixtures/maps-blocked-page.html', import.meta.url), 'utf8'),
+      readFile(new URL('./fixtures/maps-unknown-layout-page.html', import.meta.url), 'utf8'),
     ]);
 
     server = createServer((request, response) => {
       response.setHeader('content-type', 'text/html; charset=utf-8');
-      response.end(request.url === '/blocked' ? blockedHtml : resultsHtml);
+      if (request.url === '/blocked') {
+        response.end(blockedHtml);
+        return;
+      }
+      if (request.url === '/unknown-layout') {
+        response.end(unknownLayoutHtml);
+        return;
+      }
+      response.end(resultsHtml);
     });
 
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -93,6 +104,14 @@ describe('GoogleMapsBrowserProvider with real Chromium', () => {
 
     await expect(provider.searchBusinesses(searchInput)).rejects.toBeInstanceOf(
       DiscoveryAccessBlockedError,
+    );
+  }, 20_000);
+
+  it('fails closed on an unknown rendered layout instead of reporting a successful empty page', async () => {
+    const provider = createProvider('/unknown-layout');
+
+    await expect(provider.searchBusinesses(searchInput)).rejects.toBeInstanceOf(
+      DiscoveryProviderError,
     );
   }, 20_000);
 });
