@@ -138,7 +138,7 @@ export async function scrollGoogleMapsResults(page: Page): Promise<boolean> {
   if ((await feed.count()) === 0) return false;
 
   await feed.evaluate((element) => {
-    element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
+    element.scrollTo({ top: element.scrollHeight, behavior: 'auto' });
   });
   return true;
 }
