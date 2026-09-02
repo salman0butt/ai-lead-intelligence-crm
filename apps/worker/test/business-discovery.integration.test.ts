@@ -381,18 +381,26 @@ integration('business discovery processor', () => {
         idempotencyKey: `test-plan:${planJobId}`,
       },
     });
+    type PlanningEnqueueArgs = [
+      queue: string,
+      payload: Record<string, string>,
+      options: { idempotencyKey: string },
+    ];
     const planningQueue = {
-      enqueue: vi.fn(async (queue: string) => ({
-        jobId: randomUUID(),
-        queue,
-        status: 'QUEUED',
-        workspaceId: fixture.workspace.id,
-        attempts: 0,
-        createdAt: new Date(),
-        startedAt: null,
-        finishedAt: null,
-        failureReason: null,
-      })),
+      enqueue: vi.fn(async (...args: PlanningEnqueueArgs) => {
+        const [queue] = args;
+        return {
+          jobId: randomUUID(),
+          queue,
+          status: 'QUEUED',
+          workspaceId: fixture.workspace.id,
+          attempts: 0,
+          createdAt: new Date(),
+          startedAt: null,
+          finishedAt: null,
+          failureReason: null,
+        };
+      }),
     };
 
     await processCampaignPlanJob(
@@ -417,7 +425,7 @@ integration('business discovery processor', () => {
     const freshCall = planningQueue.enqueue.mock.calls.find(
       ([queue, payload]) =>
         queue === 'campaign-discovery'
-        && (payload as { searchTaskId?: string }).searchTaskId === fixture.task.id,
+        && payload.searchTaskId === fixture.task.id,
     );
     expect(freshCall).toBeDefined();
     const freshPayload = freshCall![1] as {
