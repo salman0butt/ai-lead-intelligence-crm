@@ -72,6 +72,16 @@ describe('optional browser page interpretation', () => {
     expect(interpret).not.toHaveBeenCalled();
   }, 20_000);
 
+  it('fails closed on an unknown layout when AI interpretation is not configured', async () => {
+    const provider = new GoogleMapsBrowserProvider({
+      sessionFactory: sessionFactory(),
+      searchUrlBuilder: () => `${origin}/unknown`,
+      scrollPauseMs: 25,
+    });
+
+    await expect(provider.searchBusinesses(searchInput)).rejects.toThrow(/layout/i);
+  }, 20_000);
+
   it('invokes the interpreter exactly once for an unknown rendered layout', async () => {
     const interpret = vi.fn<BrowserPageInterpreter['interpret']>().mockResolvedValue({
       kind: 'UNKNOWN_LAYOUT',
