@@ -66,10 +66,16 @@ integration('candidate canonicalization backfill', () => {
     });
   }
 
-  it('canonicalizes pre-M5 candidates in bounded batches using the live matching rules', async () => {
+  it('canonicalizes pre-M5 candidates in bounded workspace batches using the live matching rules', async () => {
     const context = await createContext('batch');
+    const isolated = await createContext('batch-isolated');
     const firstCampaign = await createCampaign(context.workspace.id, context.user.id, 'first');
     const secondCampaign = await createCampaign(context.workspace.id, context.user.id, 'second');
+    const isolatedCampaign = await createCampaign(
+      isolated.workspace.id,
+      isolated.user.id,
+      'isolated',
+    );
     const providerExternalId = `maps-url-sha256:${randomUUID()}`;
 
     const first = await database.businessCandidate.create({
@@ -92,27 +98,46 @@ integration('candidate canonicalization backfill', () => {
         formattedAddress: '123 Main Street, Austin, TX',
       },
     });
+    const isolatedCandidate = await database.businessCandidate.create({
+      data: {
+        workspaceId: isolated.workspace.id,
+        campaignId: isolatedCampaign.id,
+        provider: 'google-maps-browser',
+        providerExternalId,
+        name: 'Legacy Dental',
+        formattedAddress: '123 Main St, Austin, TX',
+      },
+    });
 
-    await expect(backfillBusinessCandidates(database, 1)).resolves.toEqual({
-      processed: 2,
-      matched: 2,
+    await expect(backfillBusinessCandidates(database, { batchSize: 1 })).resolves.toEqual({
+      processed: 3,
+      matched: 3,
     });
 
     const rows = await database.businessCandidate.findMany({
       where: { id: { in: [first.id, second.id] } },
       orderBy: { createdAt: 'asc' },
     });
+    const isolatedRow = await database.businessCandidate.findUniqueOrThrow({
+      where: { id: isolatedCandidate.id },
+    });
+
     expect(rows[0]?.matchedBusinessId).not.toBeNull();
     expect(rows[0]?.duplicateReason).toBe(DuplicateReason.NEW_CANONICAL);
     expect(rows[1]?.matchedBusinessId).toBe(rows[0]?.matchedBusinessId);
     expect(rows[1]?.duplicateReason).toBe(DuplicateReason.PROVIDER_EXTERNAL_ID);
     expect(rows[1]?.duplicateConfidence).toBe(1);
+    expect(isolatedRow.matchedBusinessId).not.toBe(rows[0]?.matchedBusinessId);
+    expect(isolatedRow.duplicateReason).toBe(DuplicateReason.NEW_CANONICAL);
     expect(await database.business.count({
       where: { workspaceId: context.workspace.id },
     })).toBe(1);
+    expect(await database.business.count({
+      where: { workspaceId: isolated.workspace.id },
+    })).toBe(1);
   });
 
-  it('is restart-safe and does not create additional businesses when run twice', async () => {
+  it('defaults the batch size and is restart-safe when run twice', async () => {
     const context = await createContext('restart');
     const campaign = await createCampaign(context.workspace.id, context.user.id, 'restart');
     await database.businessCandidate.create({
@@ -126,11 +151,11 @@ integration('candidate canonicalization backfill', () => {
       },
     });
 
-    await expect(backfillBusinessCandidates(database, 10)).resolves.toEqual({
+    await expect(backfillBusinessCandidates(database)).resolves.toEqual({
       processed: 1,
       matched: 1,
     });
-    await expect(backfillBusinessCandidates(database, 10)).resolves.toEqual({
+    await expect(backfillBusinessCandidates(database)).resolves.toEqual({
       processed: 0,
       matched: 0,
     });
@@ -179,7 +204,7 @@ integration('candidate canonicalization backfill', () => {
       },
     });
 
-    await expect(backfillBusinessCandidates(database, 10)).resolves.toEqual({
+    await expect(backfillBusinessCandidates(database, { batchSize: 10 })).resolves.toEqual({
       processed: 1,
       matched: 1,
     });
@@ -192,7 +217,11 @@ integration('candidate canonicalization backfill', () => {
   });
 
   it('rejects invalid batch sizes before changing database state', async () => {
-    await expect(backfillBusinessCandidates(database, 0)).rejects.toThrow('positive integer');
-    await expect(backfillBusinessCandidates(database, 1.5)).rejects.toThrow('positive integer');
+    await expect(backfillBusinessCandidates(database, { batchSize: 0 })).rejects.toThrow(
+      'positive integer',
+    );
+    await expect(backfillBusinessCandidates(database, { batchSize: 1.5 })).rejects.toThrow(
+      'positive integer',
+    );
   });
 });
