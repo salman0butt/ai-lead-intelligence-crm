@@ -98,10 +98,10 @@ integration('business canonicalizer', () => {
         providerExternalId: input.providerExternalId ?? `maps-url-sha256:${randomUUID()}`,
         name: input.name ?? 'Acme Dental',
         formattedAddress: input.formattedAddress ?? '12 Main St, Austin, TX 78701',
-        city: input.city,
-        postalCode: input.postalCode,
-        phone: input.phone,
-        canonicalDomain: input.canonicalDomain,
+        city: input.city ?? null,
+        postalCode: input.postalCode ?? null,
+        phone: input.phone ?? null,
+        canonicalDomain: input.canonicalDomain ?? null,
       },
     });
   }
@@ -123,11 +123,11 @@ integration('business canonicalizer', () => {
         normalizedName: normalized.normalizedName,
         formattedAddress: input.formattedAddress,
         normalizedAddress: normalized.normalizedAddress,
-        city: input.city,
+        city: input.city ?? null,
         normalizedCity: normalized.normalizedCity,
-        postalCode: input.postalCode,
+        postalCode: input.postalCode ?? null,
         normalizedPostalCode: normalized.normalizedPostalCode,
-        phone: input.phone,
+        phone: input.phone ?? null,
         normalizedPhone: normalized.normalizedPhone,
         canonicalDomain: normalized.canonicalDomain,
       },
@@ -303,7 +303,9 @@ integration('business canonicalizer', () => {
     const rightResult = await canonicalize(right.workspaceId, rightCandidate.id);
 
     expect(rightResult.businessId).not.toBe(leftResult.businessId);
-    expect(await database.business.count()).toBe(2);
+    expect(await database.business.count({
+      where: { workspaceId: { in: [left.workspaceId, right.workspaceId] } },
+    })).toBe(2);
   });
 
   it('does not choose an arbitrary canonical business for ambiguous exact matches', async () => {
