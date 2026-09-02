@@ -206,7 +206,7 @@ export class GoogleMapsBrowserProvider
 
         const scrolled = await scrollGoogleMapsResults(session.page);
         if (!scrolled) {
-          if (interpreterUsed) {
+          if (results.length === 0) {
             throw new DiscoveryProviderError(
               'Google Maps browser page layout could not be safely interpreted',
               422,
