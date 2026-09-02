@@ -77,7 +77,7 @@ export class GoogleMapsBrowserProvider
   private readonly sessionFactory: BrowserSessionFactory;
   private readonly searchUrlBuilder: (input: BusinessSearchInput) => string;
   private readonly scrollPauseMs: number;
-  private readonly interpreter?: BrowserPageInterpreter;
+  private readonly interpreter: BrowserPageInterpreter | undefined;
 
   constructor(options: GoogleMapsBrowserProviderOptions = {}) {
     this.sessionFactory =
