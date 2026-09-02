@@ -17,16 +17,20 @@ type RawListing = {
   address: string;
 };
 
-function createProvider(results: RawListing[], error?: Error) {
+function createProvider(
+  results: RawListing[],
+  error?: Error,
+  nextCursor: string | null = null,
+) {
   return {
     name: 'google-maps-browser',
     searchBusinesses: vi.fn(async () => {
       if (error) throw error;
-      return { results, nextCursor: null };
+      return { results, nextCursor };
     }),
     continueSearch: vi.fn(async () => {
       if (error) throw error;
-      return { results, nextCursor: null };
+      return { results, nextCursor };
     }),
     normalizeResult: vi.fn((raw: RawListing) => ({
       providerExternalId: raw.id,
@@ -247,6 +251,86 @@ integration('business discovery processor', () => {
     await expect(
       database.businessSource.count({ where: { businessCandidate: { campaignId: first.campaign.id } } }),
     ).resolves.toBe(4);
+  });
+
+  it('repairs a committed continuation after enqueue failure without repeating provider I/O', async () => {
+    const fixture = await createFixture(database);
+    workspaceIds.push(fixture.workspace.id);
+    userIds.push(fixture.user.id);
+
+    const provider = createProvider(
+      [{ id: 'maps-url-sha256:page-1', name: 'Page One Dental', address: '100 Main St, Austin, TX' }],
+      undefined,
+      'cursor-2',
+    );
+    const registry = createRegistry(provider);
+    const enqueue = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('queue unavailable after page commit'))
+      .mockResolvedValueOnce({
+        jobId: randomUUID(),
+        queue: 'campaign-discovery',
+        status: 'QUEUED',
+        workspaceId: fixture.workspace.id,
+        attempts: 0,
+        createdAt: new Date(),
+        startedAt: null,
+        finishedAt: null,
+        failureReason: null,
+      });
+    const queue = { enqueue };
+    const oldPageOneJob = {
+      id: fixture.jobId,
+      data: {
+        jobId: fixture.jobId,
+        workspaceId: fixture.workspace.id,
+        campaignId: fixture.campaign.id,
+        searchTaskId: fixture.task.id,
+        campaignVersion: fixture.campaign.updatedAt.toISOString(),
+        pageNumber: '1',
+      },
+    };
+
+    await expect(
+      processBusinessDiscoveryJob(database, queue as never, registry as never, oldPageOneJob),
+    ).rejects.toThrow('queue unavailable after page commit');
+
+    await expect(
+      database.searchTask.findUniqueOrThrow({ where: { id: fixture.task.id } }),
+    ).resolves.toMatchObject({
+      status: SearchTaskStatus.PENDING,
+      pageNumber: 2,
+      continuationCursor: 'cursor-2',
+      attemptCount: 1,
+      resultCount: 1,
+    });
+    expect(provider.searchBusinesses).toHaveBeenCalledTimes(1);
+    expect(provider.continueSearch).not.toHaveBeenCalled();
+
+    await processBusinessDiscoveryJob(
+      database,
+      queue as never,
+      registry as never,
+      oldPageOneJob,
+    );
+
+    expect(provider.searchBusinesses).toHaveBeenCalledTimes(1);
+    expect(provider.continueSearch).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(enqueue).toHaveBeenLastCalledWith(
+      'campaign-discovery',
+      {
+        workspaceId: fixture.workspace.id,
+        campaignId: fixture.campaign.id,
+        searchTaskId: fixture.task.id,
+        campaignVersion: fixture.campaign.updatedAt.toISOString(),
+        pageNumber: '2',
+      },
+      {
+        idempotencyKey:
+          `campaign-discovery:${fixture.task.id}:${fixture.campaign.updatedAt.toISOString()}:page:2`,
+      },
+    );
   });
 
   it.each(['PAUSED', 'CANCELLED'] as const)(
