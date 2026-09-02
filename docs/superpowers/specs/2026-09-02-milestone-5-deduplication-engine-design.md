@@ -153,7 +153,7 @@ A `Business` belongs to a workspace, not a campaign. The same real business disc
 
 M5 does not make canonical domain, phone, name/address, or name/city/postal database-unique. Those values are strong matching signals, not unconditional relational uniqueness guarantees. Canonicalization concurrency is handled explicitly in the transaction flow described below.
 
-Recommended indexes:
+Required lookup indexes:
 
 ```text
 workspaceId + canonicalDomain
@@ -196,7 +196,7 @@ That constraint continues to prevent repeated exact provider candidates inside o
 
 ### Duplicate reason
 
-Persist stable machine-readable reasons using a Prisma enum or an equivalent constrained representation:
+Persist stable machine-readable reasons using a Prisma enum named `DuplicateReason`:
 
 ```text
 PROVIDER_EXTERNAL_ID
@@ -385,6 +385,18 @@ confidence = 0.97
 reason = NAME_CITY_POSTAL_EXACT
 ```
 
+### Exact-match ambiguity
+
+An exact lookup must never select an arbitrary row when more than one existing `Business` satisfies the same rule.
+
+For provider/domain/phone/name-address/name-city-postal lookups:
+
+- zero rows means continue to the next rule;
+- one eligible row means accept the rule;
+- more than one eligible row is treated as ambiguous and must not be auto-selected by row order.
+
+Ambiguous exact results continue to the remaining rules. If no later rule resolves them uniquely, the candidate remains unmerged and receives its own canonical business. This favors false negatives over false-positive merges.
+
 ### Strong-identifier conflict veto for weaker rules
 
 Before accepting a secondary exact or fuzzy match, reject that candidate business from weaker-rule consideration when both sides contain a non-null strong identifier and the normalized values conflict.
@@ -414,7 +426,7 @@ A fuzzy pool is eligible only when the incoming candidate has supporting geograp
 2. otherwise, if `normalizedCity` is present, compare workspace businesses with that city;
 3. otherwise skip fuzzy auto-merge and create a new canonical business.
 
-This keeps fuzzy comparison bounded and prevents unsupported same-name merges when M4 has not supplied city/postal identity fields.
+This keeps fuzzy comparison geography-scoped and prevents unsupported same-name merges when M4 has not supplied city/postal identity fields.
 
 The strong-identifier conflict veto is applied to every fuzzy pool member before scoring.
 
@@ -427,7 +439,7 @@ For each normalized string, calculate:
 - normalized Levenshtein/edit similarity in `[0, 1]`;
 - token Jaccard similarity in `[0, 1]`.
 
-Suggested component scores:
+The required component scores are:
 
 ```text
 nameSimilarity    = 0.70 * editSimilarity + 0.30 * tokenJaccard
@@ -491,20 +503,20 @@ When no existing business is accepted, create one from the incoming candidate.
 Populate:
 
 ```text
-name                <- candidate.name
-normalizedName      <- normalized candidate name
-formattedAddress    <- candidate.formattedAddress
-normalizedAddress   <- normalized candidate address
-city                <- candidate.city
-normalizedCity      <- normalized candidate city
-postalCode          <- candidate.postalCode
-normalizedPostalCode<- normalized candidate postal
-phone               <- candidate.phone
-normalizedPhone     <- normalized candidate phone
-canonicalDomain     <- normalized candidate canonicalDomain
+name                 <- candidate.name
+normalizedName       <- normalized candidate name
+formattedAddress     <- candidate.formattedAddress
+normalizedAddress    <- normalized candidate address
+city                 <- candidate.city
+normalizedCity       <- normalized candidate city
+postalCode           <- candidate.postalCode
+normalizedPostalCode <- normalized candidate postal
+phone                <- candidate.phone
+normalizedPhone      <- normalized candidate phone
+canonicalDomain      <- normalized candidate canonicalDomain
 ```
 
-M5 uses first-canonicalized values as the canonical display identity. When another candidate later links to the same business, M5 may fill a currently-null optional canonical identifier from the new candidate, but it must not overwrite a different non-null phone/domain merely because a weaker rule matched.
+M5 uses first-canonicalized values as the canonical display identity. When another candidate later links to the same business, M5 fills a currently-null optional canonical identifier from the new candidate, but it must not overwrite a different non-null phone/domain merely because a weaker rule matched.
 
 M5 does not implement source-ranking or field-level provenance merging. Those concerns can be added when later enrichment milestones introduce richer data quality evidence.
 
@@ -651,6 +663,7 @@ Required cases:
 - fuzzy matching without supporting geography does not auto-merge;
 - low-confidence fuzzy candidate creates its own business;
 - ambiguous high fuzzy candidates do not auto-merge;
+- exact-match ambiguity never selects an arbitrary canonical row;
 - two similar but distinct businesses remain separate;
 - conflicting strong identifiers veto weaker merge;
 - candidate replay remains idempotent;
@@ -685,7 +698,8 @@ M5 is complete when:
 - every newly persisted M4 candidate is linked to a workspace-scoped canonical `Business` in the same successful transaction;
 - the same provider listing found in different campaigns maps to one canonical business;
 - exact domain, phone, name/address, and name/city/postal matching follow the defined confidence/reason rules;
-- fuzzy matching is deterministic, bounded, geography-supported, ambiguity-aware, and conservative;
+- exact-match ambiguity never picks a row by incidental database order;
+- fuzzy matching is deterministic, geography-scoped, ambiguity-aware, and conservative;
 - low-confidence fuzzy comparisons do not auto-merge;
 - canonicalization is workspace-isolated and concurrency-safe;
 - replay/backfill are idempotent;
