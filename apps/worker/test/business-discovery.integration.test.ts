@@ -7,6 +7,7 @@ import {
   type DatabaseClient,
 } from '@ai-crm/database';
 import { processBusinessDiscoveryJob } from '../src/business-discovery.processor.js';
+import { processCampaignPlanJob } from '../src/campaign-plan.processor.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? describe.sequential : describe.skip;
@@ -331,6 +332,126 @@ integration('business discovery processor', () => {
           `campaign-discovery:${fixture.task.id}:${fixture.campaign.updatedAt.toISOString()}:page:2`,
       },
     );
+  });
+
+  it('keeps a paused generation inert and lets resumed planning hand off a fresh discovery generation', async () => {
+    const fixture = await createFixture(database);
+    workspaceIds.push(fixture.workspace.id);
+    userIds.push(fixture.user.id);
+
+    const provider = createProvider([
+      { id: 'maps-url-sha256:fresh-generation', name: 'Fresh Dental', address: '900 Main St, Austin, TX' },
+    ]);
+    const registry = createRegistry(provider);
+    const oldGeneration = fixture.campaign.updatedAt.toISOString();
+
+    await database.campaign.update({
+      where: { id: fixture.campaign.id },
+      data: { status: CampaignStatus.PAUSED },
+    });
+
+    await processBusinessDiscoveryJob(
+      database,
+      createQueue() as never,
+      registry as never,
+      {
+        id: fixture.jobId,
+        data: {
+          jobId: fixture.jobId,
+          workspaceId: fixture.workspace.id,
+          campaignId: fixture.campaign.id,
+          searchTaskId: fixture.task.id,
+          campaignVersion: oldGeneration,
+          pageNumber: '1',
+        },
+      },
+    );
+    expect(provider.searchBusinesses).not.toHaveBeenCalled();
+
+    await database.campaign.update({
+      where: { id: fixture.campaign.id },
+      data: { status: CampaignStatus.PLANNING },
+    });
+    const planJobId = randomUUID();
+    await database.jobMetadata.create({
+      data: {
+        jobId: planJobId,
+        queue: 'campaign-plan',
+        workspaceId: fixture.workspace.id,
+        idempotencyKey: `test-plan:${planJobId}`,
+      },
+    });
+    const planningQueue = {
+      enqueue: vi.fn(async (queue: string) => ({
+        jobId: randomUUID(),
+        queue,
+        status: 'QUEUED',
+        workspaceId: fixture.workspace.id,
+        attempts: 0,
+        createdAt: new Date(),
+        startedAt: null,
+        finishedAt: null,
+        failureReason: null,
+      })),
+    };
+
+    await processCampaignPlanJob(
+      database,
+      planningQueue as never,
+      {
+        id: planJobId,
+        data: {
+          jobId: planJobId,
+          workspaceId: fixture.workspace.id,
+          campaignId: fixture.campaign.id,
+        },
+      },
+    );
+
+    const discoveringCampaign = await database.campaign.findUniqueOrThrow({
+      where: { id: fixture.campaign.id },
+    });
+    expect(discoveringCampaign.status).toBe(CampaignStatus.DISCOVERING);
+    expect(discoveringCampaign.updatedAt.toISOString()).not.toBe(oldGeneration);
+
+    const freshCall = planningQueue.enqueue.mock.calls.find(
+      ([queue, payload]) =>
+        queue === 'campaign-discovery'
+        && (payload as { searchTaskId?: string }).searchTaskId === fixture.task.id,
+    );
+    expect(freshCall).toBeDefined();
+    const freshPayload = freshCall![1] as {
+      workspaceId: string;
+      campaignId: string;
+      searchTaskId: string;
+      campaignVersion: string;
+      pageNumber: string;
+    };
+    expect(freshPayload.campaignVersion).toBe(discoveringCampaign.updatedAt.toISOString());
+
+    const freshJobId = randomUUID();
+    await database.jobMetadata.create({
+      data: {
+        jobId: freshJobId,
+        queue: 'campaign-discovery',
+        workspaceId: fixture.workspace.id,
+        idempotencyKey: `test-fresh-discovery:${freshJobId}`,
+      },
+    });
+    await processBusinessDiscoveryJob(
+      database,
+      createQueue() as never,
+      registry as never,
+      {
+        id: freshJobId,
+        data: { ...freshPayload, jobId: freshJobId },
+      },
+    );
+
+    expect(provider.searchBusinesses).toHaveBeenCalledTimes(1);
+    await expect(
+      database.searchTask.findUniqueOrThrow({ where: { id: fixture.task.id } }),
+    ).resolves.toMatchObject({ status: SearchTaskStatus.COMPLETED, attemptCount: 1 });
   });
 
   it.each(['PAUSED', 'CANCELLED'] as const)(
