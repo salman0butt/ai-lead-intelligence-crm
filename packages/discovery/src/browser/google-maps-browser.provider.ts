@@ -18,11 +18,17 @@ import {
   mapsListingExternalId,
   normalizeMapsListingUrl,
 } from './maps-url.js';
-import type {
-  BusinessDiscoveryPage,
-  BusinessDiscoveryProvider,
-  BusinessSearchInput,
-  NormalizedBusiness,
+import {
+  captureBrowserPageSnapshot,
+  type BrowserPageInterpreter,
+  type BrowserPageKind,
+} from './page-interpreter.js';
+import {
+  DiscoveryProviderError,
+  type BusinessDiscoveryPage,
+  type BusinessDiscoveryProvider,
+  type BusinessSearchInput,
+  type NormalizedBusiness,
 } from '../types.js';
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -35,6 +41,7 @@ export interface GoogleMapsBrowserProviderOptions {
   sessionFactory?: BrowserSessionFactory;
   searchUrlBuilder?: (input: BusinessSearchInput) => string;
   scrollPauseMs?: number;
+  interpreter?: BrowserPageInterpreter;
 }
 
 function defaultSearchUrl(input: BusinessSearchInput): string {
@@ -70,6 +77,7 @@ export class GoogleMapsBrowserProvider
   private readonly sessionFactory: BrowserSessionFactory;
   private readonly searchUrlBuilder: (input: BusinessSearchInput) => string;
   private readonly scrollPauseMs: number;
+  private readonly interpreter?: BrowserPageInterpreter;
 
   constructor(options: GoogleMapsBrowserProviderOptions = {}) {
     this.sessionFactory =
@@ -81,6 +89,7 @@ export class GoogleMapsBrowserProvider
       });
     this.searchUrlBuilder = options.searchUrlBuilder ?? defaultSearchUrl;
     this.scrollPauseMs = options.scrollPauseMs ?? 750;
+    this.interpreter = options.interpreter;
 
     if (!Number.isFinite(this.scrollPauseMs) || this.scrollPauseMs < 0) {
       throw new Error('Google Maps browser scroll pause must be non-negative');
@@ -135,6 +144,7 @@ export class GoogleMapsBrowserProvider
       let scrollRounds = cursor.scrollRounds;
       let emptyScrollRounds = 0;
       let hasScrolled = false;
+      let interpreterUsed = false;
 
       while (true) {
         const rendered = await extractGoogleMapsListings(session.page);
@@ -169,6 +179,20 @@ export class GoogleMapsBrowserProvider
 
         if (reachedEnd) return { results, nextCursor: null };
 
+        if (
+          rendered.length === 0 &&
+          results.length === 0 &&
+          this.interpreter &&
+          !interpreterUsed
+        ) {
+          interpreterUsed = true;
+          const interpretation = await this.interpreter.interpret(
+            await captureBrowserPageSnapshot(session.page),
+          );
+          const terminal = this.handleInterpretation(interpretation.kind);
+          if (terminal) return terminal;
+        }
+
         if (hasScrolled) {
           emptyScrollRounds = fresh.length === 0 ? emptyScrollRounds + 1 : 0;
           if (emptyScrollRounds >= MAX_EMPTY_SCROLL_ROUNDS) {
@@ -181,7 +205,15 @@ export class GoogleMapsBrowserProvider
         }
 
         const scrolled = await scrollGoogleMapsResults(session.page);
-        if (!scrolled) return { results, nextCursor: null };
+        if (!scrolled) {
+          if (interpreterUsed) {
+            throw new DiscoveryProviderError(
+              'Google Maps browser page layout could not be safely interpreted',
+              422,
+            );
+          }
+          return { results, nextCursor: null };
+        }
 
         scrollRounds += 1;
         hasScrolled = true;
@@ -191,6 +223,30 @@ export class GoogleMapsBrowserProvider
     } finally {
       await closeSession(session);
     }
+  }
+
+  private handleInterpretation(
+    kind: BrowserPageKind,
+  ): BusinessDiscoveryPage<GoogleMapsBrowserListing> | null {
+    if (kind === 'NO_RESULTS') return { results: [], nextCursor: null };
+    if (kind === 'BLOCKED_OR_CAPTCHA') {
+      throw new DiscoveryAccessBlockedError(
+        'Google Maps browser discovery stopped because the page was classified as blocked or CAPTCHA-protected',
+      );
+    }
+    if (kind === 'CONSENT_PAGE') {
+      throw new DiscoveryAccessBlockedError(
+        'Google Maps browser discovery stopped because a consent page requires user interaction',
+        { rateLimited: false },
+      );
+    }
+    if (kind === 'UNKNOWN_LAYOUT') {
+      throw new DiscoveryProviderError(
+        'Google Maps browser page layout could not be safely interpreted',
+        422,
+      );
+    }
+    return null;
   }
 
   private async assertAccessAllowed(session: BrowserSession): Promise<void> {
