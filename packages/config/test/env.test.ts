@@ -9,13 +9,47 @@ const requiredEnv = {
 };
 
 describe('loadServerEnv', () => {
-  it('accepts required environment and keeps AI credentials optional', () => {
+  it('accepts required environment and applies safe browser discovery defaults', () => {
     const env = loadServerEnv(requiredEnv);
 
     expect(env.NODE_ENV).toBe('test');
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.DISCOVERY_AI_MODEL).toBeUndefined();
+    expect(env.DISCOVERY_BROWSER_HEADLESS).toBe(true);
+    expect(env.DISCOVERY_BROWSER_CONCURRENCY).toBe(1);
+    expect(env.DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS).toBe(30_000);
+    expect(env.DISCOVERY_BROWSER_ACTION_TIMEOUT_MS).toBe(10_000);
     expect(env).not.toHaveProperty('GOOGLE_PLACES_API_KEY');
+  });
+
+  it('parses explicit browser runtime settings', () => {
+    const env = loadServerEnv({
+      ...requiredEnv,
+      DISCOVERY_BROWSER_HEADLESS: 'false',
+      DISCOVERY_BROWSER_CONCURRENCY: '3',
+      DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS: '45000',
+      DISCOVERY_BROWSER_ACTION_TIMEOUT_MS: '15000',
+    });
+
+    expect(env.DISCOVERY_BROWSER_HEADLESS).toBe(false);
+    expect(env.DISCOVERY_BROWSER_CONCURRENCY).toBe(3);
+    expect(env.DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS).toBe(45_000);
+    expect(env.DISCOVERY_BROWSER_ACTION_TIMEOUT_MS).toBe(15_000);
+  });
+
+  it('rejects unsafe browser runtime settings', () => {
+    expect(() =>
+      loadServerEnv({ ...requiredEnv, DISCOVERY_BROWSER_CONCURRENCY: '0' }),
+    ).toThrow();
+    expect(() =>
+      loadServerEnv({ ...requiredEnv, DISCOVERY_BROWSER_CONCURRENCY: '9' }),
+    ).toThrow();
+    expect(() =>
+      loadServerEnv({ ...requiredEnv, DISCOVERY_BROWSER_HEADLESS: 'maybe' }),
+    ).toThrow();
+    expect(() =>
+      loadServerEnv({ ...requiredEnv, DISCOVERY_BROWSER_NAVIGATION_TIMEOUT_MS: '0' }),
+    ).toThrow();
   });
 
   it('accepts an optional discovery AI fallback model without requiring it', () => {
