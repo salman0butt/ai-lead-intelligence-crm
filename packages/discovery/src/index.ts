@@ -16,6 +16,17 @@ export {
   mapsListingExternalId,
   normalizeMapsListingUrl,
 } from './browser/maps-url.js';
+export { OpenAiBrowserPageInterpreter } from './browser/openai-page-interpreter.js';
+export {
+  captureBrowserPageSnapshot,
+  sanitizeBrowserPageSnapshot,
+} from './browser/page-interpreter.js';
+export type {
+  BrowserPageInterpretation,
+  BrowserPageInterpreter,
+  BrowserPageKind,
+  BrowserPageSnapshot,
+} from './browser/page-interpreter.js';
 export { DiscoveryProviderRegistry } from './provider-registry.js';
 export { DiscoveryProviderError } from './types.js';
 export type {
