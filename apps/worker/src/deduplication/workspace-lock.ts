@@ -8,7 +8,7 @@ export async function acquireWorkspaceCanonicalizationLock(
     throw new Error('workspace canonicalization lock requires workspaceId');
   }
 
-  await tx.$queryRaw`
+  await tx.$executeRaw`
     SELECT pg_advisory_xact_lock(
       hashtextextended(CAST(${workspaceId} AS text), CAST(0 AS bigint))
     )
