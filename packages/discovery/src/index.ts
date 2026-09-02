@@ -28,6 +28,17 @@ export type {
   BrowserPageSnapshot,
 } from './browser/page-interpreter.js';
 export { ConcurrencyLimitedDiscoveryProvider } from './concurrency-limited-provider.js';
+export {
+  normalizeDomain,
+  normalizeIdentity,
+  normalizePhone,
+  normalizePostalCode,
+  normalizeText,
+} from './deduplication/normalize.js';
+export type {
+  BusinessIdentityInput,
+  NormalizedBusinessIdentity,
+} from './deduplication/types.js';
 export { DiscoveryProviderRegistry } from './provider-registry.js';
 export { DiscoveryProviderError } from './types.js';
 export type {
