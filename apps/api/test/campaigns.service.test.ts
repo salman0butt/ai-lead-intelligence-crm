@@ -193,19 +193,26 @@ describe('CampaignsService', () => {
     expect((await discoveringService.pause(userId, campaignId)).status).toBe('PAUSED');
   });
 
-  it('resumes a paused campaign through planning and publishes a fresh versioned plan generation', async () => {
-    const paused = createDb({ status: 'PAUSED' });
+  it('pauses discovery then resumes through a fresh versioned planning generation', async () => {
+    const lifecycle = createDb({ status: 'DISCOVERING' });
     const queue = createQueue();
-    const service = new CampaignsService(paused.db as never, queue as never);
+    const service = new CampaignsService(lifecycle.db as never, queue as never);
 
-    const campaign = await service.resume(userId, campaignId);
-    const version = paused.getCampaign().updatedAt.toISOString();
+    const oldGeneration = lifecycle.getCampaign().updatedAt.toISOString();
+    const paused = await service.pause(userId, campaignId);
+    const pausedGeneration = lifecycle.getCampaign().updatedAt.toISOString();
+    const resumed = await service.resume(userId, campaignId);
+    const resumedGeneration = lifecycle.getCampaign().updatedAt.toISOString();
 
-    expect(campaign.status).toBe('PLANNING');
+    expect(paused.status).toBe('PAUSED');
+    expect(resumed.status).toBe('PLANNING');
+    expect(pausedGeneration).not.toBe(oldGeneration);
+    expect(resumedGeneration).not.toBe(pausedGeneration);
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
     expect(queue.enqueue).toHaveBeenCalledWith(
       'campaign-plan',
       { workspaceId, campaignId },
-      { idempotencyKey: `campaign-plan:${campaignId}:${version}` },
+      { idempotencyKey: `campaign-plan:${campaignId}:${resumedGeneration}` },
     );
   });
 
